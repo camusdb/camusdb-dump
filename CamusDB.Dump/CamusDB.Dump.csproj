@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net6.0;net7.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>camus-dump</ToolCommandName>
+    <PackageOutputPath>./nupkg</PackageOutputPath>
+    <PackageId>CamusDB.Dump</PackageId>
+    <Version>0.0.1</Version>
+    <Description>camus-dump performs logical backups, producing a set of SQL statements that can be executed to reproduce the original CamusDB database definitions and table data</Description>
+    <Authors>CamusDB</Authors>
+    <Company>CamusDB</Company>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageDescription>camus-dump performs logical backups, producing a set of SQL statements that can be executed to reproduce the original CamusDB database definitions and table data</PackageDescription>
+    <PackageProjectUrl>https://github.com/camusdb/camusdb-dump</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/camusdb/camusdb-dump</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>dotnet;camusdb;cli;database;sql;backup;restore</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>    
+    <PackageReference Include="CamusDB.Client" Version="0.0.6-alpha" />
+    <PackageReference Include="CsvHelper" Version="30.0.1" />
+    <PackageReference Include="CommandLineParser" Version="2.9.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+</Project>
