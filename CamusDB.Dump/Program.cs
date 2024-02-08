@@ -18,7 +18,7 @@ if (opts is null)
 
 //Console.WriteLine("CamusDB Dump 0.0.1\n");
 
-var connection = await GetConnection(opts);
+CamusConnection connection = await GetConnection(opts);
 
 List<string> tables = await FetchTables(connection);
 
@@ -32,10 +32,10 @@ static async Task DumpTableDefinition(CamusConnection connection, string table)
 {
     using CamusCommand cmd = connection.CreateSelectCommand("SHOW CREATE TABLE `" + table + "`");
 
-    using CamusDataReader reader = await cmd.ExecuteReaderAsync();    
+    using CamusDataReader reader = await cmd.ExecuteReaderAsync();
 
     while (await reader.ReadAsync())
-    {        
+    {
         Dictionary<string, ColumnValue> current = reader.GetCurrent();
 
         Console.WriteLine("{0}\n", current["Create Table"].StrValue!);
@@ -45,9 +45,10 @@ static async Task DumpTableDefinition(CamusConnection connection, string table)
 static async Task DumpTable(CamusConnection connection, string table)
 {
     using CamusCommand cmd = connection.CreateSelectCommand("SELECT * FROM `" + table + "`");
-    
+
     using CamusDataReader reader = await cmd.ExecuteReaderAsync();
 
+    int number = 0;
     StringBuilder sb = new();
     string? fields = null;
 
@@ -71,18 +72,24 @@ static async Task DumpTable(CamusConnection connection, string table)
             fields = string.Join(", ", fieldsList);
         }
 
-        sb.Append("INSERT INTO `" + table + "` (" + fields + ") VALUES (");
+        sb.Append("INSERT INTO `");
+        sb.Append(table);
+        sb.Append("` (");
+        sb.Append(fields);
+        sb.Append(") VALUES ");
+
+        sb.Append('(');
 
         foreach (KeyValuePair<string, ColumnValue> item in current)
         {
             if (item.Value.Type == ColumnType.Id)
                 row[i++] = !string.IsNullOrEmpty(item.Value.StrValue) ? "STR_ID(\"" + item.Value.StrValue!.ToString() + "\")" : "STR_ID(\"\")";
             else if (item.Value.Type == ColumnType.String)
-                row[i++] = !string.IsNullOrEmpty(item.Value.StrValue) ? "\"" + item.Value.StrValue!.ToString() + "\"" : "\"\"";
+                row[i++] = !string.IsNullOrEmpty(item.Value.StrValue) ? "\"" + item.Value.StrValue!.ToString().Replace("\"", "\\\"") + "\"" : "\"\"";
             else if (item.Value.Type == ColumnType.Integer64)
                 row[i++] = item.Value.LongValue.ToString();
-            else if (item.Value.Type == ColumnType.Float)
-                row[i++] = item.Value.LongValue.ToString();
+            else if (item.Value.Type == ColumnType.Float64)
+                row[i++] = item.Value.FloatValue.ToString();
             else if (item.Value.Type == ColumnType.Bool)
                 row[i++] = item.Value.BoolValue.ToString();
             else
