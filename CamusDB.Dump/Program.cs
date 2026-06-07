@@ -20,7 +20,11 @@ if (opts is null)
 
 CamusConnection connection = await GetConnection(opts);
 
-List<string> tables = await FetchTables(connection);
+List<string> tables;
+if (!string.IsNullOrEmpty(opts.Table))
+    tables = new() { opts.Table };
+else
+    tables = await FetchTables(connection);
 
 foreach (string table in tables)
 {
@@ -36,9 +40,8 @@ static async Task DumpTableDefinition(CamusConnection connection, string table)
 
     while (await reader.ReadAsync())
     {
-        Dictionary<string, ColumnValue> current = reader.GetCurrent();
-
-        Console.WriteLine("{0}\n", current["Create Table"].StrValue!);
+        int ordinal = reader.GetOrdinal("Create Table");
+        Console.WriteLine("{0}\n", reader.GetString(ordinal));
     }
 }
 
@@ -48,7 +51,6 @@ static async Task DumpTable(CamusConnection connection, string table)
 
     using CamusDataReader reader = await cmd.ExecuteReaderAsync();
 
-    int number = 0;
     StringBuilder sb = new();
     string? fields = null;
 
@@ -56,20 +58,26 @@ static async Task DumpTable(CamusConnection connection, string table)
     {
         sb.Clear();
 
-        Dictionary<string, ColumnValue> current = reader.GetCurrent();
-
-        int i = 0;
-        string[] row = new string[current.Count];
-
         if (fields is null)
         {
-            int j = 0;
-            string[] fieldsList = new string[current.Count];
-
-            foreach (KeyValuePair<string, ColumnValue> item in current)
-                fieldsList[j++] = "`" + item.Key + "`";
-
+            string[] fieldsList = new string[reader.FieldCount];
+            for (int j = 0; j < reader.FieldCount; j++)
+                fieldsList[j] = "`" + reader.GetName(j) + "`";
             fields = string.Join(", ", fieldsList);
+        }
+
+        string[] row = new string[reader.FieldCount];
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            row[i] = reader.GetDataTypeName(i) switch
+            {
+                "Id" => "STR_ID(\"" + (reader.IsDBNull(i) ? "" : reader.GetString(i)) + "\")",
+                "String" => "\"" + (reader.IsDBNull(i) ? "" : reader.GetString(i).Replace("\"", "\\\"")) + "\"",
+                "Integer64" => reader.GetInt64(i).ToString(),
+                "Float64" => reader.GetDouble(i).ToString(),
+                "Bool" => reader.GetBoolean(i).ToString(),
+                _ => "null"
+            };
         }
 
         sb.Append("INSERT INTO `");
@@ -79,23 +87,6 @@ static async Task DumpTable(CamusConnection connection, string table)
         sb.Append(") VALUES ");
 
         sb.Append('(');
-
-        foreach (KeyValuePair<string, ColumnValue> item in current)
-        {
-            if (item.Value.Type == ColumnType.Id)
-                row[i++] = !string.IsNullOrEmpty(item.Value.StrValue) ? "STR_ID(\"" + item.Value.StrValue!.ToString() + "\")" : "STR_ID(\"\")";
-            else if (item.Value.Type == ColumnType.String)
-                row[i++] = !string.IsNullOrEmpty(item.Value.StrValue) ? "\"" + item.Value.StrValue!.ToString().Replace("\"", "\\\"") + "\"" : "\"\"";
-            else if (item.Value.Type == ColumnType.Integer64)
-                row[i++] = item.Value.LongValue.ToString();
-            else if (item.Value.Type == ColumnType.Float64)
-                row[i++] = item.Value.FloatValue.ToString();
-            else if (item.Value.Type == ColumnType.Bool)
-                row[i++] = item.Value.BoolValue.ToString();
-            else
-                row[i++] = "null";
-        }
-
         sb.Append(string.Join(", ", row));
 
         Console.WriteLine(sb.ToString() + ");");
@@ -113,9 +104,8 @@ static async Task<List<string>> FetchTables(CamusConnection connection)
 
     while (await reader.ReadAsync())
     {
-        Dictionary<string, ColumnValue> current = reader.GetCurrent();
-
-        tables.Add(current["tables"].StrValue!);
+        int ordinal = reader.GetOrdinal("tables");
+        tables.Add(reader.GetString(ordinal));
     }
 
     return tables;
@@ -159,4 +149,7 @@ public sealed class Options
 {
     [Option('c', "connection-source", Required = false, HelpText = "Set the connection string")]
     public string? ConnectionSource { get; set; }
+
+    [Option('t', "table", Required = false, HelpText = "Dump only the specified table")]
+    public string? Table { get; set; }
 }
