@@ -1,4 +1,6 @@
 CamusDB.Dump/bin
 CamusDB.Dump/obj
 CamusDB.Dump/.vs
+CamusDB.Dump/nupkg/
+.DS_Store
 .vs

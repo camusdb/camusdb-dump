@@ -1,155 +1,78 @@
-﻿
+
 /**
- * This file is part of CamusDB  
+ * This file is part of CamusDB
  *
  * For the full copyright and license information, please view the LICENSE.txt
  * file that was distributed with this source code.
  */
 
-using CamusDB.Client;
-using CommandLine;
 using System.Text;
+using CamusDB.Client;
+using CamusDB.Dump;
+using CommandLine;
 
 ParserResult<Options> optsResult = Parser.Default.ParseArguments<Options>(args);
 
 Options? opts = optsResult.Value;
 if (opts is null)
-    return;
+    return 1;
 
-//Console.WriteLine("CamusDB Dump 0.0.1\n");
+DumpWarnings warnings = new(opts.Strict);
 
-CamusConnection connection = await GetConnection(opts);
+TextWriter output = string.IsNullOrEmpty(opts.Output)
+    ? Console.Out
+    : new StreamWriter(opts.Output, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-List<string> tables;
-if (!string.IsNullOrEmpty(opts.Table))
-    tables = new() { opts.Table };
-else
-    tables = await FetchTables(connection);
-
-foreach (string table in tables)
+try
 {
-    await DumpTableDefinition(connection, table);
-    await DumpTable(connection, table);
-}
+    // Fixed before the first statement goes out, so every table is read at the same instant rather than
+    // at whatever moment its own scan happened to start.
+    PointInTime? pointInTime = PointInTime.Resolve(opts);
 
-static async Task DumpTableDefinition(CamusConnection connection, string table)
-{
-    using CamusCommand cmd = connection.CreateSelectCommand("SHOW CREATE TABLE `" + table + "`");
+    await using CamusConnection connection = await ConnectionFactory.CreateAsync(opts);
 
-    using CamusDataReader reader = await cmd.ExecuteReaderAsync();
+    // A dump spanning several tables is only self-consistent if every table is read from the same
+    // snapshot; a serializable read-only transaction gives that without taking locks against writers.
+    CamusTransaction? transaction = opts.SingleTransaction
+        ? await connection.BeginTransactionAsync(CamusTransactionOptions.Snapshot)
+        : null;
 
-    while (await reader.ReadAsync())
+    try
     {
-        int ordinal = reader.GetOrdinal("Create Table");
-        Console.WriteLine("{0}\n", reader.GetString(ordinal));
+        Dumper dumper = new(connection, transaction, opts, pointInTime, output, warnings);
+
+        await dumper.RunAsync();
     }
-}
-
-static async Task DumpTable(CamusConnection connection, string table)
-{
-    using CamusCommand cmd = connection.CreateSelectCommand("SELECT * FROM `" + table + "`");
-
-    using CamusDataReader reader = await cmd.ExecuteReaderAsync();
-
-    StringBuilder sb = new();
-    string? fields = null;
-
-    while (await reader.ReadAsync())
+    finally
     {
-        sb.Clear();
-
-        if (fields is null)
+        if (transaction is not null)
         {
-            string[] fieldsList = new string[reader.FieldCount];
-            for (int j = 0; j < reader.FieldCount; j++)
-                fieldsList[j] = "`" + reader.GetName(j) + "`";
-            fields = string.Join(", ", fieldsList);
+            // The dump wrote nothing, so the snapshot is released rather than committed.
+            await transaction.RollbackAsync();
+            await transaction.DisposeAsync();
         }
-
-        string[] row = new string[reader.FieldCount];
-        for (int i = 0; i < reader.FieldCount; i++)
-        {
-            row[i] = reader.GetDataTypeName(i) switch
-            {
-                "Id" => "STR_ID(\"" + (reader.IsDBNull(i) ? "" : reader.GetString(i)) + "\")",
-                "String" => "\"" + (reader.IsDBNull(i) ? "" : reader.GetString(i).Replace("\"", "\\\"")) + "\"",
-                "Integer64" => reader.GetInt64(i).ToString(),
-                "Float64" => reader.GetDouble(i).ToString(),
-                "Bool" => reader.GetBoolean(i).ToString(),
-                _ => "null"
-            };
-        }
-
-        sb.Append("INSERT INTO `");
-        sb.Append(table);
-        sb.Append("` (");
-        sb.Append(fields);
-        sb.Append(") VALUES ");
-
-        sb.Append('(');
-        sb.Append(string.Join(", ", row));
-
-        Console.WriteLine(sb.ToString() + ");");
     }
-
-    Console.WriteLine();
 }
-
-static async Task<List<string>> FetchTables(CamusConnection connection)
+catch (DumpException exception)
 {
-    using CamusCommand cmd = connection.CreateSelectCommand("SHOW TABLES");
-
-    List<string> tables = new();
-    CamusDataReader reader = await cmd.ExecuteReaderAsync();
-
-    while (await reader.ReadAsync())
-    {
-        int ordinal = reader.GetOrdinal("tables");
-        tables.Add(reader.GetString(ordinal));
-    }
-
-    return tables;
+    await output.FlushAsync();
+    await Console.Error.WriteLineAsync("camus-dump: " + exception.Message);
+    return 1;
 }
-
-
-static async Task<CamusConnection> GetConnection(Options opts)
+catch (CamusException exception)
 {
-    CamusConnection cmConnection;
-
-    SessionPoolOptions options = new()
-    {
-        MinimumPooledSessions = 1,
-        MaximumActiveSessions = 20,
-    };
-
-    string? connectionString = opts.ConnectionSource;
-
-    if (string.IsNullOrEmpty(connectionString))
-        connectionString = $"Endpoint=https://localhost:7141;Database=test";
-
-    SessionPoolManager manager = SessionPoolManager.Create(options);
-
-    CamusConnectionStringBuilder builder = new(connectionString)
-    {
-        SessionPoolManager = manager
-    };
-
-    cmConnection = new(builder);
-
-    await cmConnection.OpenAsync();
-
-    CamusPingCommand pingCommand = cmConnection.CreatePingCommand();
-
-    await pingCommand.ExecuteNonQueryAsync();
-
-    return cmConnection;
+    await output.FlushAsync();
+    await Console.Error.WriteLineAsync($"camus-dump: server error {exception.Code}: {exception.Message}");
+    return 1;
 }
-
-public sealed class Options
+finally
 {
-    [Option('c', "connection-source", Required = false, HelpText = "Set the connection string")]
-    public string? ConnectionSource { get; set; }
+    await output.FlushAsync();
 
-    [Option('t', "table", Required = false, HelpText = "Dump only the specified table")]
-    public string? Table { get; set; }
+    if (!ReferenceEquals(output, Console.Out))
+        await output.DisposeAsync();
 }
+
+warnings.Report(Console.Error);
+
+return 0;
