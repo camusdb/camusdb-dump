@@ -21,6 +21,12 @@ public sealed class Options
     [Option('d', "database", Required = false, HelpText = "Database to dump (default: test).")]
     public string? Database { get; set; }
 
+    [Option('A', "all-databases", Required = false, HelpText = "Dump every database on the server instead of just one.")]
+    public bool AllDatabases { get; set; }
+
+    [Option('X', "exclude-database", Required = false, Separator = ',', HelpText = "With --all-databases, skip these databases (comma-separated, or repeat the option).")]
+    public IEnumerable<string> ExcludeDatabases { get; set; } = [];
+
     [Option("protocol", Required = false, HelpText = "Wire protocol: grpc (default) or rest. Each addresses its own port on the server — pass an endpoint that matches.")]
     public string? Protocol { get; set; }
 
@@ -62,6 +68,9 @@ public sealed class Options
 
     [Option('o', "output", Required = false, HelpText = "Write the dump to this file instead of standard output.")]
     public string? Output { get; set; }
+
+    [Option("output-directory", Required = false, HelpText = "Write one <database>.sql file per database into this directory. The directory is created if missing.")]
+    public string? OutputDirectory { get; set; }
 
     [Option("no-create-table", Required = false, HelpText = "Do not emit CREATE TABLE statements.")]
     public bool NoCreateTable { get; set; }

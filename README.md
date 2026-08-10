@@ -23,6 +23,9 @@ camus-dump -e http://localhost:5096 -d mydb -t orders -b 100 -o orders.sql
 
 # The whole database as it was five minutes ago, replayable onto an existing schema
 camus-dump -e http://localhost:5096 -d mydb --as-of -5m --if-not-exists -o backup.sql
+
+# Every database on the server, one file each
+camus-dump -e http://localhost:5096 --all-databases --output-directory backup/
 ```
 
 Restore by feeding the file back to any CamusDB SQL client, such as [`camussqlsh`](https://github.com/camusdb/camussqlsh).
@@ -34,6 +37,8 @@ Restore by feeding the file back to any CamusDB SQL client, such as [`camussqlsh
 | `-c`, `--connection-source` | Full connection string. Every option below fills in a key it does not already set. |
 | `-e`, `--endpoint` | Server endpoint, or a comma-separated pool (default `http://localhost:5096`, the gRPC port). |
 | `-d`, `--database` | Database to dump (default `test`). |
+| `-A`, `--all-databases` | Dump every database on the server (see below). |
+| `-X`, `--exclude-database` | With `--all-databases`, skip these databases. |
 | `--protocol` | `grpc` (default) or `rest`. The server exposes each on its own port, so an endpoint given with `-e` has to match the protocol — REST against the gRPC port fails with *an HTTP/1.x request was sent to an HTTP/2 only endpoint*. |
 | `--timeout` | Per-statement timeout in seconds (default `10`). |
 
@@ -77,6 +82,24 @@ Authentication works the same over gRPC (`--protocol grpc`): the exchange rides 
 | `--no-data` | Do not emit `INSERT`. |
 | `--no-indexes` | Do not emit the `CREATE INDEX` statements that follow each table. |
 
+### Dumping every database
+
+`--all-databases` asks the server for its databases with `SHOW DATABASES` and dumps each one in turn, skipping anything `--exclude-database` names:
+
+```shell
+# Every database, as one stream of sections
+camus-dump -A -o server.sql
+
+# Every database except two, one file per database under backup/
+camus-dump -A -X scratch,tempdb --output-directory backup/
+```
+
+Every database is read as of the same instant, since the point in time is fixed once before the first statement goes out. `--single-transaction` is the exception: a transaction belongs to a connection and each database gets its own, so it makes each database internally consistent but does not tie them to a common snapshot.
+
+Each section opens with `CREATE DATABASE IF NOT EXISTS` and a `USE`, whether or not `--create-database` was passed, so one file restores every database in turn. `USE` is not server-side SQL — CamusDB's parser rejects it — but a client reads it and points the statements that follow at that database, which is how [`camus-cli`](https://github.com/camusdb/camus-cli) takes the whole file. Against a client that does not, dump with `--output-directory`: it writes `<database>.sql` per database, so each file goes back on its own with `-d` pointing at the matching database.
+
+The other options apply per database. `-t`/`-x` match table names in every one of them, and `-w` filters rows in every table it names — a condition that references a column only some tables have will fail on the others.
+
 ### Point in time
 
 By default the dump does **not** read the latest data. It fixes an instant when it starts — a second behind the wall clock, to stay clear of the server's own clock — and reads every table as of that instant with CamusDB's [`AS OF SYSTEM TIME`](https://github.com/camusdb/camusdb/blob/main/docs/time-travel-reads.md) clause. Without that, a row written between the first table's scan and the last one's lands in the dump without whatever it referenced in a table already written, and the dump restores into a state the database was never in.
@@ -116,10 +139,11 @@ Notes:
 | --- | --- |
 | `-b`, `--batch` | Rows per `INSERT` statement (default `1`). |
 | `-o`, `--output` | Write to this file instead of standard output. |
+| `--output-directory` | Write one `<database>.sql` file per database into this directory, creating it if missing. Cannot be combined with `-o`. |
 | `--defer-indexes` | Emit each table's `CREATE INDEX` statements after its data rather than before. |
 | `--add-drop-table` | Emit `DROP TABLE IF EXISTS` before each `CREATE TABLE`. |
 | `--if-not-exists` | Emit `CREATE TABLE IF NOT EXISTS`, so the dump replays onto an existing schema. |
-| `--create-database` | Emit `CREATE DATABASE IF NOT EXISTS` for the dumped database. |
+| `--create-database` | Emit `CREATE DATABASE IF NOT EXISTS` for the dumped database, followed by `USE`. Implied by `--all-databases`. |
 | `--single-transaction` | Read every table from one lock-free serializable snapshot instead of a fixed past instant. |
 | `--strict` | Fail instead of emitting `NULL` for a value that has no SQL literal (see below). |
 | `--no-header` | Omit the leading comment header. |

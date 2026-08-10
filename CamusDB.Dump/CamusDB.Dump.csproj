@@ -9,7 +9,7 @@
     <ToolCommandName>camus-dump</ToolCommandName>
     <PackageOutputPath>./nupkg</PackageOutputPath>
     <PackageId>CamusDB.Dump</PackageId>
-    <Version>0.9.4</Version>
+    <Version>0.9.5</Version>
     <Description>camus-dump performs logical backups, producing a set of SQL statements that can be executed to reproduce the original CamusDB database definitions and table data</Description>
     <Authors>CamusDB</Authors>
     <Company>CamusDB</Company>
@@ -23,7 +23,7 @@
   </PropertyGroup>
 
   <ItemGroup>    
-    <PackageReference Include="CamusDB.Client" Version="0.9.3" />
+    <PackageReference Include="CamusDB.Client" Version="0.9.6" />
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
   </ItemGroup>
 

@@ -63,9 +63,16 @@ public sealed class DumpWarnings
             .OrderBy(issue => issue.Message, StringComparer.Ordinal)
             .Select(issue => $"{issue.Message} ({issue.Count} value{(issue.Count == 1 ? "" : "s")})");
 
-    public void Report(TextWriter writer)
+    /// <summary>
+    /// Writes the collected warnings to standard error. <paramref name="database"/> names the database
+    /// they came from, which only matters when several were dumped in one run and the same table name can
+    /// appear in more than one of them.
+    /// </summary>
+    public void Report(TextWriter writer, string? database = null)
     {
+        string scope = string.IsNullOrEmpty(database) ? "" : database + ": ";
+
         foreach (string summary in Summaries())
-            writer.WriteLine("camus-dump: warning: " + summary);
+            writer.WriteLine("camus-dump: warning: " + scope + summary);
     }
 }

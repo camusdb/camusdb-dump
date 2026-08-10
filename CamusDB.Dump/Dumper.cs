@@ -23,6 +23,9 @@ internal sealed class Dumper
 
     private readonly Options opts;
 
+    /// <summary>The database this dumper reads — the one its connection is scoped to.</summary>
+    private readonly string database;
+
     private readonly TextWriter output;
 
     private readonly DumpWarnings warnings;
@@ -30,11 +33,12 @@ internal sealed class Dumper
     /// <summary>The instant the rows are read at, or null when the dump reads the latest data.</summary>
     private readonly PointInTime? pointInTime;
 
-    public Dumper(CamusConnection connection, CamusTransaction? transaction, Options opts, PointInTime? pointInTime, TextWriter output, DumpWarnings warnings)
+    public Dumper(CamusConnection connection, CamusTransaction? transaction, Options opts, string database, PointInTime? pointInTime, TextWriter output, DumpWarnings warnings)
     {
         this.connection = connection;
         this.transaction = transaction;
         this.opts = opts;
+        this.database = database;
         this.pointInTime = pointInTime;
         this.output = output;
         this.warnings = warnings;
@@ -42,15 +46,21 @@ internal sealed class Dumper
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
-        (string endpoint, string database, string protocol) = ConnectionFactory.Describe(opts);
+        (string endpoint, _, string protocol) = ConnectionFactory.Describe(opts, database);
 
         List<string> tables = await ResolveTablesAsync(cancellationToken).ConfigureAwait(false);
 
         if (!opts.NoHeader)
-            WriteHeader(endpoint, database, protocol, tables);
+            WriteHeader(endpoint, protocol, tables);
 
-        if (opts.CreateDatabase)
-            output.WriteLine($"CREATE DATABASE IF NOT EXISTS {SqlLiteral.Identifier(database)};\n");
+        // With --all-databases the pair is not optional: each section has to create its database and then
+        // point the client at it, or everything that follows would land in whichever database the client
+        // happened to connect to.
+        if (opts.CreateDatabase || opts.AllDatabases)
+        {
+            output.WriteLine($"CREATE DATABASE IF NOT EXISTS {SqlLiteral.Identifier(database)};");
+            output.WriteLine($"USE {UseTarget(database)};\n");
+        }
 
         foreach (string table in tables)
         {
@@ -75,13 +85,27 @@ internal sealed class Dumper
             WriteFooter();
     }
 
-    private void WriteHeader(string endpoint, string database, string protocol, List<string> tables)
+    /// <summary>
+    /// The database name as <c>USE</c> takes it. Unlike the rest of the dump the name is left unquoted
+    /// when it is a plain identifier: <c>USE</c> is read by the client rather than the server — it is a
+    /// shell command in camus-cli, which takes a bare name — so backticks are only worth the risk on a
+    /// name that cannot be written without them.
+    /// </summary>
+    private static string UseTarget(string database)
+        => database.Length > 0 && database.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')
+            ? database
+            : SqlLiteral.Identifier(database);
+
+    private void WriteHeader(string endpoint, string protocol, List<string> tables)
     {
         string version = typeof(Dumper).Assembly.GetName().Version?.ToString(3) ?? "";
 
         output.WriteLine($"-- camus-dump {version}");
         output.WriteLine($"-- Host: {endpoint}    Database: {database}    Protocol: {protocol}");
         output.WriteLine($"-- Tables: {(tables.Count == 0 ? "(none)" : string.Join(", ", tables))}");
+
+        if (opts.AllDatabases)
+            output.WriteLine($"-- One section of an --all-databases dump. The USE below switches to {database}; a client that does not read USE has to connect to it directly.");
 
         if (opts.SingleTransaction)
             output.WriteLine("-- Consistent snapshot: serializable read-only transaction");
@@ -107,6 +131,9 @@ internal sealed class Dumper
 
         foreach (string summary in warnings.Summaries())
             output.WriteLine("-- WARNING: " + summary);
+
+        // Keeps the next database's header off the last line of this one when several share a stream.
+        output.WriteLine();
     }
 
     /// <summary>

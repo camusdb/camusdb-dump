@@ -34,18 +34,17 @@ internal static class ConnectionFactory
     /// <summary>Environment variable read when no password is given on the command line.</summary>
     public const string PasswordVariable = "CAMUSDB_PASSWORD";
 
-    public static async Task<CamusConnection> CreateAsync(Options opts, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Opens a connection and proves it works with a ping. <paramref name="database"/> overrides the
+    /// database the options resolve to, which is how <c>--all-databases</c> gets one connection per
+    /// database — there is no <c>USE</c> statement to switch an open one over.
+    /// </summary>
+    public static async Task<CamusConnection> CreateAsync(Options opts, string? database = null, CancellationToken cancellationToken = default)
     {
-        SessionPoolOptions poolOptions = new()
-        {
-            MinimumPooledSessions = 1,
-            MaximumActiveSessions = 20,
-        };
-
-        CamusConnectionStringBuilder builder = new(BuildConnectionString(opts))
-        {
-            SessionPoolManager = SessionPoolManager.Create(poolOptions)
-        };
+        // Nothing is pooled per statement beyond the driver's own gRPC streams, sized by the
+        // ChannelPoolSize= connection-string key; its default of 2 suits a dump, which reads one table
+        // at a time.
+        CamusConnectionStringBuilder builder = new(BuildConnectionString(opts, database));
 
         CamusConnection connection = new(builder);
 
@@ -57,7 +56,7 @@ internal static class ConnectionFactory
         return connection;
     }
 
-    public static string BuildConnectionString(Options opts)
+    public static string BuildConnectionString(Options opts, string? database = null)
     {
         Dictionary<string, string> settings = Parse(opts.ConnectionSource);
 
@@ -84,7 +83,13 @@ internal static class ConnectionFactory
             settings["AccessToken"] = opts.AccessToken;
 
         SetIfAbsent(settings, "Endpoint", opts.Endpoint ?? DefaultEndpoint);
-        SetIfAbsent(settings, "Database", opts.Database ?? DefaultDatabase);
+
+        // An explicitly named database is the one being dumped right now, so it replaces whatever the
+        // connection string carries; without one, the connection string keeps precedence as usual.
+        if (!string.IsNullOrEmpty(database))
+            settings["Database"] = database;
+        else
+            SetIfAbsent(settings, "Database", opts.Database ?? DefaultDatabase);
 
         if (!string.IsNullOrEmpty(opts.Protocol))
             settings["Protocol"] = opts.Protocol;
@@ -196,13 +201,13 @@ internal static class ConnectionFactory
     }
 
     /// <summary>The endpoint and database a header line can report, without leaking the credentials.</summary>
-    public static (string Endpoint, string Database, string Protocol) Describe(Options opts)
+    public static (string Endpoint, string Database, string Protocol) Describe(Options opts, string? database = null)
     {
-        Dictionary<string, string> settings = Parse(BuildConnectionString(opts));
+        Dictionary<string, string> settings = Parse(BuildConnectionString(opts, database));
 
         return (
             settings.TryGetValue("Endpoint", out string? endpoint) ? endpoint : DefaultEndpoint,
-            settings.TryGetValue("Database", out string? database) ? database : DefaultDatabase,
+            settings.TryGetValue("Database", out string? resolved) ? resolved : DefaultDatabase,
             settings.TryGetValue("Protocol", out string? protocol) ? protocol.ToLowerInvariant() : DefaultProtocol);
     }
 }
