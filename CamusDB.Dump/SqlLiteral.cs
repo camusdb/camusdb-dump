@@ -199,6 +199,59 @@ internal static class SqlLiteral
 
     private static DateTime Utc(long ticks) => new(ticks, DateTimeKind.Utc);
 
-    /// <summary>Quotes an identifier. CamusDB identifiers are <c>[A-Za-z_][A-Za-z0-9_]*</c>, so backticks always suffice.</summary>
-    public static string Identifier(string name) => "`" + name + "`";
+    /// <summary>
+    /// Quotes an identifier for the dump, after it is checked against the CamusDB identifier grammar
+    /// <c>[A-Za-z_][A-Za-z0-9_]*</c>.
+    ///
+    /// <para>The check is the point of this method. Every name here comes from the server — table names
+    /// from <c>SHOW TABLES</c>, database names from <c>SHOW DATABASES</c>, index and column names from
+    /// <c>SHOW INDEXES</c> and from the data reader — or from an option the operator typed. A dump file
+    /// is a program: whatever lands in it runs at restore time, with the restoring client's rights, often
+    /// against a more sensitive database than the source. A name such as <c>x`; DROP TABLE users; --</c>
+    /// would otherwise close the quoting and carry its own statements across. The grammar was already
+    /// assumed here; it is now enforced.</para>
+    ///
+    /// <para>Backticks in the name are doubled as well, so the quoting stays correct on its own terms if
+    /// the grammar above is ever widened.</para>
+    /// </summary>
+    /// <param name="name">The identifier to quote.</param>
+    /// <param name="kind">What the name names, used in the error message — "table", "column", and so on.</param>
+    /// <exception cref="DumpException">The name is not a CamusDB identifier.</exception>
+    public static string Identifier(string name, string kind)
+    {
+        RequirePlainIdentifier(name, kind);
+
+        return "`" + name.Replace("`", "``") + "`";
+    }
+
+    /// <summary>
+    /// Throws unless <paramref name="name"/> is a CamusDB identifier. Callers that emit a name without
+    /// quoting it use this directly.
+    /// </summary>
+    /// <exception cref="DumpException">The name is not a CamusDB identifier.</exception>
+    public static void RequirePlainIdentifier(string name, string kind)
+    {
+        if (IsPlainIdentifier(name))
+            return;
+
+        throw new DumpException(
+            $"the server reported the {kind} '{name}', which is not a CamusDB identifier " +
+            "([A-Za-z_][A-Za-z0-9_]*). It is refused rather than written into the dump, because a dump " +
+            "runs as SQL when it is restored. Exclude the object with --exclude-table or --exclude-database.");
+    }
+
+    /// <summary>Whether a name matches the CamusDB identifier grammar <c>[A-Za-z_][A-Za-z0-9_]*</c>.</summary>
+    public static bool IsPlainIdentifier(string name)
+    {
+        if (name.Length == 0 || !(char.IsAsciiLetter(name[0]) || name[0] == '_'))
+            return false;
+
+        foreach (char c in name)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c != '_')
+                return false;
+        }
+
+        return true;
+    }
 }

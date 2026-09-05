@@ -39,7 +39,7 @@ public sealed class Options
     [Option('W', "ask-password", Required = false, HelpText = "Prompt for the password on the terminal.")]
     public bool AskPassword { get; set; }
 
-    [Option("access-token", Required = false, HelpText = "Bearer token obtained elsewhere, used instead of logging in.")]
+    [Option("access-token", Required = false, HelpText = "Bearer token obtained elsewhere, used instead of logging in. Prefer CAMUSDB_ACCESS_TOKEN: a token on the command line is visible to other processes.")]
     public string? AccessToken { get; set; }
 
     [Option("token-lifetime", Required = false, HelpText = "Seconds to reuse a minted token when the server reports no expiry (default: 600).")]
@@ -54,7 +54,7 @@ public sealed class Options
     [Option('x', "exclude-table", Required = false, Separator = ',', HelpText = "Skip these tables (comma-separated, or repeat the option).")]
     public IEnumerable<string> ExcludeTables { get; set; } = [];
 
-    [Option('w', "where", Required = false, HelpText = "Dump only rows matching this WHERE condition.")]
+    [Option('w', "where", Required = false, HelpText = "Dump only rows matching this WHERE condition. The text is unparsed SQL and is spliced into the query as given, so never build it from untrusted input.")]
     public string? Where { get; set; }
 
     [Option("as-of", Required = false, HelpText = "Read every table as of this point in time: a negative offset (-10s, -5m, -1h, -1d), an absolute UTC timestamp ('2026-07-19 20:00:00+00:00'), or Unix epoch milliseconds. Defaults to the instant the dump starts.")]

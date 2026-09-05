@@ -53,8 +53,8 @@ CAMUSDB_PASSWORD=app-secret camus-dump -e https://camus.internal:5096 -d mydb -u
 # Prompt for it instead
 camus-dump -e https://camus.internal:5096 -d mydb -u app --ask-password
 
-# Or use a token minted elsewhere
-camus-dump -e https://camus.internal:5096 -d mydb --access-token "camus_..."
+# Or use a token minted elsewhere — from the environment for the same reason
+CAMUSDB_ACCESS_TOKEN=camus_... camus-dump -e https://camus.internal:5096 -d mydb
 ```
 
 | Option | Description |
@@ -62,10 +62,12 @@ camus-dump -e https://camus.internal:5096 -d mydb --access-token "camus_..."
 | `-u`, `--user` | User to authenticate as. |
 | `-p`, `--password` | That user's password. Prefer `CAMUSDB_PASSWORD` or `--ask-password`. |
 | `-W`, `--ask-password` | Prompt for the password on the terminal. |
-| `--access-token` | Bearer token obtained elsewhere, used instead of logging in. |
+| `--access-token` | Bearer token obtained elsewhere, used instead of logging in. Prefer `CAMUSDB_ACCESS_TOKEN`. |
 | `--token-lifetime` | Seconds to reuse a minted token when the server reports no expiry (default `600`). |
 
-The password is exchanged once for a short-lived bearer token, which the driver renews on its own; the password itself never travels with a statement. The dump only reads, so `SELECT` and `SHOW` privileges on the dumped tables are enough. With authentication enabled the server refuses credentials over plaintext outside loopback — use an `https://` endpoint.
+A password or a token given on the command line is visible to every local user through the process list, for as long as the dump runs. `CAMUSDB_PASSWORD`, `CAMUSDB_ACCESS_TOKEN` and `--ask-password` avoid that.
+
+The password is exchanged once for a short-lived bearer token, which the driver renews on its own; the password itself never travels with a statement. The dump only reads, so `SELECT` and `SHOW` privileges on the dumped tables are enough. With authentication enabled the server refuses credentials over plaintext outside loopback — use an `https://` endpoint. The rows themselves carry no such rule, so camus-dump warns when it sends a dump unencrypted to another host.
 
 Authentication works the same over gRPC (`--protocol grpc`): the exchange rides the server's `CamusAuth` service on the channel that carries the statements, so no HTTP port has to be exposed just to obtain a token.
 
@@ -75,7 +77,7 @@ Authentication works the same over gRPC (`--protocol grpc`): the exchange rides 
 | --- | --- |
 | `-t`, `--table` | Dump only these tables (comma-separated, or repeat the option). |
 | `-x`, `--exclude-table` | Skip these tables. |
-| `-w`, `--where` | Dump only rows matching this condition. |
+| `-w`, `--where` | Dump only rows matching this condition. The text is unparsed SQL and reaches the query as written, so never build it from untrusted input. |
 | `--as-of` | Read every table as of this point in time (see below). |
 | `--no-as-of` | Read the latest committed data instead. |
 | `--no-create-table` | Do not emit `CREATE TABLE`. |
@@ -147,6 +149,8 @@ Notes:
 | `--single-transaction` | Read every table from one lock-free serializable snapshot instead of a fixed past instant. |
 | `--strict` | Fail instead of emitting `NULL` for a value that has no SQL literal (see below). |
 | `--no-header` | Omit the leading comment header. |
+
+A dump holds every row of the database, so `-o` and `--output-directory` create files that only their owner can read or write, and `--output-directory` creates the directory the same way. An existing directory keeps the permissions it has; camus-dump warns when other users can write to it. A path that is already a symbolic link is refused rather than followed, because the dump would truncate whatever is at the far end.
 
 ### Data types and indexes
 

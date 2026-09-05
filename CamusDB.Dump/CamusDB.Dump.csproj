@@ -2,19 +2,21 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>camus-dump</ToolCommandName>
     <PackageOutputPath>./nupkg</PackageOutputPath>
     <PackageId>CamusDB.Dump</PackageId>
-    <Version>0.9.5</Version>
+    <Version>0.11.0</Version>
     <Description>camus-dump performs logical backups, producing a set of SQL statements that can be executed to reproduce the original CamusDB database definitions and table data</Description>
     <Authors>CamusDB</Authors>
     <Company>CamusDB</Company>
     <InvariantGlobalization>true</InvariantGlobalization>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <!-- Pins the whole transitive graph, so a restore elsewhere reproduces the reviewed set. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <PackageDescription>camus-dump performs logical backups, producing a set of SQL statements that can be executed to reproduce the original CamusDB database definitions and table data</PackageDescription>
     <PackageProjectUrl>https://github.com/camusdb/camusdb-dump</PackageProjectUrl>
     <RepositoryUrl>https://github.com/camusdb/camusdb-dump</RepositoryUrl>
@@ -23,7 +25,7 @@
   </PropertyGroup>
 
   <ItemGroup>    
-    <PackageReference Include="CamusDB.Client" Version="0.9.6" />
+    <PackageReference Include="CamusDB.Client" Version="0.11.0" />
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
   </ItemGroup>
 
