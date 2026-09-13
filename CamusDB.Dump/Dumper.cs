@@ -180,6 +180,11 @@ internal sealed partial class Dumper
 
             ValidateTableDefinition(ddl, table);
 
+            // A DEFAULT or a COMMENT in the definition is a string literal the server wrote in the plain
+            // form, so one ending in a backslash would break the loader that reads the dump. See SqlText.
+            if (!SqlText.TryMakeLiteralsUnambiguous(ddl, out ddl, out string? problem))
+                throw new DumpException(Refuse(table, problem!));
+
             if (!ddl.EndsWith(';'))
                 ddl += ";";
 
@@ -361,7 +366,7 @@ internal sealed partial class Dumper
     /// <exception cref="DumpException">The definition is not a single CREATE TABLE for this table.</exception>
     private static void ValidateTableDefinition(string ddl, string table)
     {
-        int separator = FindStatementSeparator(ddl, out bool unterminated);
+        int separator = SqlText.FindStatementSeparator(ddl, out bool unterminated);
 
         if (unterminated)
             throw new DumpException(Refuse(table, "it leaves a quoted string or a comment open"));
@@ -385,105 +390,6 @@ internal sealed partial class Dumper
         => $"the server's definition of table '{table}' was refused: {reason}. A dump runs as SQL when it " +
            "is restored, so only a single CREATE TABLE for this table is written out. " +
            "Skip the table with --exclude-table.";
-
-    /// <summary>
-    /// The index of the first <c>;</c> in <paramref name="sql"/> that stands outside every string
-    /// literal, quoted identifier and comment, or -1 when there is none. <paramref name="unterminated"/>
-    /// reports a literal or a block comment that is never closed, which is itself a reason to refuse the
-    /// text: the rest of it cannot be scanned.
-    /// </summary>
-    private static int FindStatementSeparator(string sql, out bool unterminated)
-    {
-        unterminated = false;
-
-        int i = 0;
-
-        while (i < sql.Length)
-        {
-            char c = sql[i];
-
-            if (c == ';')
-                return i;
-
-            // A line comment runs to the newline, and an unterminated one ends the text harmlessly.
-            if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
-            {
-                int newline = sql.IndexOf('\n', i);
-                i = newline < 0 ? sql.Length : newline + 1;
-                continue;
-            }
-
-            if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
-            {
-                int close = sql.IndexOf("*/", i + 2, StringComparison.Ordinal);
-
-                if (close < 0)
-                {
-                    unterminated = true;
-                    return -1;
-                }
-
-                i = close + 2;
-                continue;
-            }
-
-            if (c is '`' or '"' or '\'')
-            {
-                // Only the E'…' form reads a backslash as an escape; a plain literal takes it verbatim.
-                bool escapes = c == '\'' && i > 0 && (sql[i - 1] is 'E' or 'e')
-                    && (i == 1 || !(char.IsAsciiLetterOrDigit(sql[i - 2]) || sql[i - 2] == '_'));
-
-                i = SkipDelimited(sql, i, c, escapes);
-
-                if (i < 0)
-                {
-                    unterminated = true;
-                    return -1;
-                }
-
-                continue;
-            }
-
-            i++;
-        }
-
-        return -1;
-    }
-
-    /// <summary>
-    /// The index just past the delimiter that closes the run starting at <paramref name="start"/>, or -1
-    /// when it is never closed. A doubled delimiter stands for one character and does not close the run.
-    /// </summary>
-    private static int SkipDelimited(string sql, int start, char delimiter, bool backslashEscapes)
-    {
-        int i = start + 1;
-
-        while (i < sql.Length)
-        {
-            char c = sql[i];
-
-            if (backslashEscapes && c == '\\')
-            {
-                i += 2;
-                continue;
-            }
-
-            if (c == delimiter)
-            {
-                if (i + 1 < sql.Length && sql[i + 1] == delimiter)
-                {
-                    i += 2;
-                    continue;
-                }
-
-                return i + 1;
-            }
-
-            i++;
-        }
-
-        return -1;
-    }
 
     private CamusCommand CreateCommand(string sql)
     {

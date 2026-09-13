@@ -21,11 +21,9 @@ namespace CamusDB.Dump;
 /// literal at all are the non-finite floats (NaN, ±Infinity), which are reported through
 /// <see cref="DumpWarnings"/> rather than silently mangled.</para>
 ///
-/// <para>The string rules mirror the server's <c>SqlStringLiteral</c> exactly and must be kept in
-/// step with it by hand: this tool depends on <c>CamusDB.Client</c>, not <c>CamusDB.Core</c>, so it
-/// cannot reference that type. A plain <c>'…'</c> literal does no escape processing (a backslash is
-/// an ordinary character, a doubled quote is one quote), and only a value containing a control
-/// character needs the <c>E'…'</c> escape form.</para>
+/// <para>The string rules mirror the server's <c>SqlStringLiteral</c> and must be kept in step with it
+/// by hand: this tool depends on <c>CamusDB.Client</c>, not <c>CamusDB.Core</c>, so it cannot reference
+/// that type. <see cref="Quote"/> documents the one place the two differ on purpose.</para>
 /// </summary>
 internal static class SqlLiteral
 {
@@ -46,10 +44,10 @@ internal static class SqlLiteral
             case ColumnType.Id:
                 return value.StrValue is null
                     ? "NULL"
-                    : "STR_ID(" + RenderString(value.StrValue) + ")";
+                    : "STR_ID(" + Quote(value.StrValue) + ")";
 
             case ColumnType.String:
-                return RenderString(value.StrValue ?? "");
+                return Quote(value.StrValue ?? "");
 
             case ColumnType.Integer64:
                 return value.LongValue.ToString(CultureInfo.InvariantCulture);
@@ -86,32 +84,70 @@ internal static class SqlLiteral
     }
 
     /// <summary>
-    /// Quotes a string so the server parses it back byte for byte.
+    /// Quotes a string so that the server parses it back character for character, in a spelling that
+    /// every statement splitter ends at the same character.
     ///
-    /// <para>The plain form carries almost everything: it does no escape processing, so a backslash,
-    /// a regex, a Windows path, and the other quote character all survive verbatim, and the only
-    /// special sequence is a doubled delimiter. Only a control character — which the lexer excludes
-    /// from a plain literal outright — needs the <c>E'…'</c> escape form.</para>
+    /// <para>The server has two literal forms. The plain form <c>'…'</c> does no escape processing at
+    /// all: a backslash is an ordinary character, and the only special sequence is a doubled quote. The
+    /// escape form <c>E'…'</c> reads a backslash as an escape, which is how a control character gets a
+    /// spelling. <see cref="NeedsEscapeForm"/> decides between them.</para>
     ///
-    /// <para>This replaced a scheme that tried both quote styles and re-scanned each candidate with a
-    /// hand-written emulation of the lexer. That emulation existed because some values had no literal
-    /// at all; now that every value does, the emulation is gone and with it the risk of it drifting
-    /// from the real scanner.</para>
+    /// <para><b>Why a backslash alone selects the escape form.</b> The server is not the first reader of
+    /// a dump. The loading client reads it first, and cuts the file into statements at the <c>;</c>
+    /// characters that stand outside a string. Such a splitter has to decide what closes a string, and
+    /// camus-cli reads <c>\'</c> as an escaped quote in every literal, while the server reads it as a
+    /// backslash followed by the closing quote. A value that ends with a backslash therefore has no
+    /// plain spelling the two agree on. <c>'…\'</c> closes the string for the server and leaves it open
+    /// for the splitter, which then swallows the statement terminator and merges the next statement into
+    /// this one — the CADB0406 syntax error seen on a load. A doubled backslash is not a repair either,
+    /// because the plain form has no escapes and would store both characters.</para>
+    ///
+    /// <para>The escape form has a spelling that both readings end at the same character, and that
+    /// spelling is the invariant this file rests on: <b>inside <c>E'…'</c> a backslash is always
+    /// doubled, and a quote is always written <c>''</c>, never <c>\'</c></b>. A reader that honours
+    /// backslash escapes consumes <c>\\</c> as one escape, so it never meets a backslash beside a quote.
+    /// A reader that honours no backslash escapes sees only doubled quotes. Both stop at the same
+    /// closing quote. The server reads the <c>E</c> prefix and decodes the value exactly: its lexer
+    /// admits a doubled quote inside the escape form (the <c>EscStringSingle</c> production), and its
+    /// decoder maps that pair to one quote.</para>
+    ///
+    /// <para>A value with no backslash and no control character keeps the plain form, where the two
+    /// readings cannot differ: with no backslash in the body, a backslash rule has nothing to act on.
+    /// </para>
     /// </summary>
-    private static string RenderString(string value)
+    public static string Quote(string value)
+        => NeedsEscapeForm(value) ? QuoteEscaped(value) : QuotePlain(value);
+
+    /// <summary>
+    /// True when the value needs the <c>E'…'</c> form. Two kinds of character put it there: a control
+    /// character, which the plain literal body excludes outright, and a backslash, which the readers of
+    /// a dump disagree about (see <see cref="Quote"/>).
+    /// </summary>
+    private static bool NeedsEscapeForm(string value)
     {
         foreach (char c in value)
         {
-            if (char.IsControl(c))
-                return QuoteEscaped(value);
+            if (c == '\\' || char.IsControl(c))
+                return true;
         }
 
-        return "'" + value.Replace("'", "''") + "'";
+        return false;
     }
 
+    private static string QuotePlain(string value) => "'" + value.Replace("'", "''") + "'";
+
     /// <summary>
-    /// Renders the <c>E'…'</c> escape form, used only for values holding a control character.
-    /// Mirrors the escape set the server's decoder accepts.
+    /// Renders the <c>E'…'</c> escape form. The escape set is the one the server's decoder accepts, with
+    /// two deliberate restrictions.
+    ///
+    /// <list type="bullet">
+    ///   <item>A quote is written <c>''</c> and never <c>\'</c>, so that the literal ends at the same
+    ///     character under either escape grammar. <see cref="Quote"/> carries the full reason.</item>
+    ///   <item>NUL is written <c>\u0000</c> and never <c>\0</c>. The decoder tries octal before the named
+    ///     escapes, so a NUL followed by two octal digits — <c>\0</c> then <c>12</c> — reads back as the
+    ///     single octal escape <c>\012</c>, which is a line feed. No other named escape can be extended
+    ///     that way.</item>
+    /// </list>
     /// </summary>
     private static string QuoteEscaped(string value)
     {
@@ -124,8 +160,7 @@ internal static class SqlLiteral
             switch (c)
             {
                 case '\\': sb.Append("\\\\"); break;
-                case '\'': sb.Append("\\'"); break;
-                case '\0': sb.Append("\\0"); break;
+                case '\'': sb.Append("''"); break;
                 case '\a': sb.Append("\\a"); break;
                 case '\b': sb.Append("\\b"); break;
                 case '\f': sb.Append("\\f"); break;

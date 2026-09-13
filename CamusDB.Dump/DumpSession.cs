@@ -29,6 +29,12 @@ internal sealed class DumpSession
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     };
 
+    /// <summary>Where the <c>CREATE USER</c> statements go under <c>--output-directory</c>.</summary>
+    private const string UsersFileName = "users.sql";
+
+    /// <summary>Where the <c>GRANT</c> statements go under <c>--output-directory</c>.</summary>
+    private const string GrantsFileName = "grants.sql";
+
     private readonly Options opts;
 
     /// <summary>Written at the end to standard error, so warnings survive a dump sent to standard output.</summary>
@@ -59,8 +65,26 @@ internal sealed class DumpSession
 
             List<string> databases = await DatabaseCatalog.ResolveAsync(opts, cancellationToken).ConfigureAwait(false);
 
+            // Read before any output file is opened, so a run that cannot read the accounts fails
+            // before it writes a dump that would be missing them.
+            UserExport? users = opts.AllUsers || opts.Users.Any()
+                ? await UserDumper.FetchAsync(opts, cancellationToken).ConfigureAwait(false)
+                : null;
+
+            if (users is not null && !string.IsNullOrEmpty(opts.OutputDirectory))
+                RequireExportFileNamesFree(databases);
+
             if (string.IsNullOrEmpty(opts.OutputDirectory))
                 shared = OpenSharedOutput();
+
+            // Accounts come first: a GRANT needs its account, and so does anything else granted later.
+            if (users is not null)
+            {
+                if (shared is not null)
+                    users.WriteUsers(shared);
+                else
+                    await WriteExportFileAsync(UsersFileName, users.WriteUsers).ConfigureAwait(false);
+            }
 
             foreach (string database in databases)
             {
@@ -81,15 +105,27 @@ internal sealed class DumpSession
                         await output.DisposeAsync().ConfigureAwait(false);
                 }
             }
+
+            // Grants come last: each one resolves its object to an immutable id, so the database or the
+            // table it covers has to exist by the time it runs.
+            if (users is not null)
+            {
+                if (shared is not null)
+                    users.WriteGrants(shared);
+                else
+                    await WriteExportFileAsync(GrantsFileName, users.WriteGrants).ConfigureAwait(false);
+            }
         }
         catch (DumpException exception)
         {
             await Console.Error.WriteLineAsync("camus-dump: " + exception.Message).ConfigureAwait(false);
             return 1;
         }
+        // Not labelled a server error: from CamusDB.Client 0.12 the driver raises some of these itself,
+        // before anything is sent — CADB0519 refuses credentials bound for a plaintext remote endpoint.
         catch (CamusException exception)
         {
-            await Console.Error.WriteLineAsync($"camus-dump: server error {exception.Code}: {exception.Message}").ConfigureAwait(false);
+            await Console.Error.WriteLineAsync($"camus-dump: error {exception.Code}: {exception.Message}").ConfigureAwait(false);
             return 1;
         }
         catch (OperationCanceledException)
@@ -152,6 +188,50 @@ internal sealed class DumpSession
                 await transaction.RollbackAsync().ConfigureAwait(false);
                 await transaction.DisposeAsync().ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// Refuses an <c>--output-directory</c> run where a database would be dumped to the same file as the
+    /// accounts or the grants. Both are written as <c>&lt;name&gt;.sql</c> in one directory, so a
+    /// database called <c>users</c> and the account export claim the same name, and one would overwrite
+    /// the other. The comparison ignores case, because so do several file systems.
+    /// </summary>
+    /// <exception cref="DumpException">A selected database is named after an export file.</exception>
+    private static void RequireExportFileNamesFree(List<string> databases)
+    {
+        foreach (string database in databases)
+        {
+            if (!string.Equals(database, "users", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(database, "grants", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            throw new DumpException(
+                $"the database '{database}' and the account export would both be written to " +
+                $"'{database}.sql' under --output-directory, and one would overwrite the other. " +
+                "Dump that database on its own with --database and --output, or export the accounts in a " +
+                "separate run.");
+        }
+    }
+
+    /// <summary>
+    /// Writes one of the two account files under <c>--output-directory</c>, with the same permissions and
+    /// the same symbolic-link refusal as a database file.
+    /// </summary>
+    private async Task WriteExportFileAsync(string fileName, Action<TextWriter> write)
+    {
+        CreateOutputDirectory(opts.OutputDirectory!);
+
+        TextWriter output = OpenDumpFile(Path.Combine(opts.OutputDirectory!, fileName));
+
+        try
+        {
+            write(output);
+        }
+        finally
+        {
+            await output.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+            await output.DisposeAsync().ConfigureAwait(false);
         }
     }
 

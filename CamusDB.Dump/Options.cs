@@ -54,6 +54,12 @@ public sealed class Options
     [Option('x', "exclude-table", Required = false, Separator = ',', HelpText = "Skip these tables (comma-separated, or repeat the option).")]
     public IEnumerable<string> ExcludeTables { get; set; } = [];
 
+    [Option("users", Required = false, Separator = ',', HelpText = "Also export these database accounts (comma-separated, or repeat the option): a CREATE USER statement without a password, plus every GRANT the server reports for each. CamusDB has no statement that lists accounts, so they have to be named here.")]
+    public IEnumerable<string> Users { get; set; } = [];
+
+    [Option("all-users", Required = false, HelpText = "Also export every database account and every grant, read with SHOW USERS and SHOW GRANTS FOR *. Needs a superuser and a server that has those statements; against an older server, name the accounts with --users.")]
+    public bool AllUsers { get; set; }
+
     [Option('w', "where", Required = false, HelpText = "Dump only rows matching this WHERE condition. The text is unparsed SQL and is spliced into the query as given, so never build it from untrusted input.")]
     public string? Where { get; set; }
 
@@ -96,7 +102,7 @@ public sealed class Options
     [Option("single-transaction", Required = false, HelpText = "Dump every table from one lock-free serializable snapshot, so the dump is consistent across tables.")]
     public bool SingleTransaction { get; set; }
 
-    [Option("strict", Required = false, HelpText = "Fail instead of emitting NULL when a value has no CamusDB SQL literal (ARRAY columns, strings holding control characters).")]
+    [Option("strict", Required = false, HelpText = "Fail instead of emitting NULL when a value has no CamusDB SQL literal (a non-finite float: NaN, Infinity).")]
     public bool Strict { get; set; }
 
     [Option("no-header", Required = false, HelpText = "Omit the leading comment header.")]

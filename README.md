@@ -67,7 +67,7 @@ CAMUSDB_ACCESS_TOKEN=camus_... camus-dump -e https://camus.internal:5096 -d mydb
 
 A password or a token given on the command line is visible to every local user through the process list, for as long as the dump runs. `CAMUSDB_PASSWORD`, `CAMUSDB_ACCESS_TOKEN` and `--ask-password` avoid that.
 
-The password is exchanged once for a short-lived bearer token, which the driver renews on its own; the password itself never travels with a statement. The dump only reads, so `SELECT` and `SHOW` privileges on the dumped tables are enough. With authentication enabled the server refuses credentials over plaintext outside loopback — use an `https://` endpoint. The rows themselves carry no such rule, so camus-dump warns when it sends a dump unencrypted to another host.
+The password is exchanged once for a short-lived bearer token, which the driver renews on its own; the password itself never travels with a statement. The dump only reads, so `SELECT` and `SHOW` privileges on the dumped tables are enough. Credentials are refused over plaintext outside loopback — use an `https://` endpoint. The driver refuses them itself, with `CADB0519`, before anything is sent; the server refuses them as well. Where the link is protected some other way, such as a VPN or an SSH tunnel, pass `-c "AllowInsecureCredentials=true"` to accept that. The rows themselves carry no such rule, so camus-dump warns when it sends a dump unencrypted to another host.
 
 Authentication works the same over gRPC (`--protocol grpc`): the exchange rides the server's `CamusAuth` service on the channel that carries the statements, so no HTTP port has to be exposed just to obtain a token.
 
@@ -78,6 +78,8 @@ Authentication works the same over gRPC (`--protocol grpc`): the exchange rides 
 | `-t`, `--table` | Dump only these tables (comma-separated, or repeat the option). |
 | `-x`, `--exclude-table` | Skip these tables. |
 | `-w`, `--where` | Dump only rows matching this condition. The text is unparsed SQL and reaches the query as written, so never build it from untrusted input. |
+| `--users` | Also export these database accounts and their grants (see below). |
+| `--all-users` | Also export every database account and every grant (see below). |
 | `--as-of` | Read every table as of this point in time (see below). |
 | `--no-as-of` | Read the latest committed data instead. |
 | `--no-create-table` | Do not emit `CREATE TABLE`. |
@@ -101,6 +103,64 @@ Every database is read as of the same instant, since the point in time is fixed 
 Each section opens with `CREATE DATABASE IF NOT EXISTS` and a `USE`, whether or not `--create-database` was passed, so one file restores every database in turn. `USE` is not server-side SQL — CamusDB's parser rejects it — but a client reads it and points the statements that follow at that database, which is how [`camus-cli`](https://github.com/camusdb/camus-cli) takes the whole file. Against a client that does not, dump with `--output-directory`: it writes `<database>.sql` per database, so each file goes back on its own with `-d` pointing at the matching database.
 
 The other options apply per database. `-t`/`-x` match table names in every one of them, and `-w` filters rows in every table it names — a condition that references a column only some tables have will fail on the others.
+
+### Users and grants
+
+A dump carries databases, tables, indexes and rows. It does not carry the accounts that reach them,
+and a storage revision upgrade empties the user catalog, so after a reimport the server holds the
+bootstrap superuser and nothing else. Two options export the accounts, so that the list of grants is
+not something you have to keep by hand:
+
+```shell
+# Every database, every account and every grant, with the accounts in their own files under backup/
+camus-dump -e https://db1.internal:5096 -u admin -A --all-users --output-directory backup/
+
+# One database, plus two named accounts and everything granted to them
+camus-dump -e https://db1.internal:5096 -u admin -d shop --users app,reporting -o shop.sql
+```
+
+`--all-users` reads the catalog with `SHOW USERS` and `SHOW GRANTS FOR *`. The server answers each of
+those from its own snapshot, so camus-dump checks one against the other: every account's grant count
+from `SHOW USERS` has to match the grants listed for it. When an account or a grant changes between the
+two reads, both are read again, up to three times, and then the dump fails. The check compares counts,
+so a revoke and a grant on one account between the two reads can still pass it; take an exact dump while
+nobody changes accounts. The export also names the accounts that were superusers and the accounts that
+had no password on the source, because `SHOW USERS` reports both.
+
+`--users` reads one account at a time with `SHOW GRANTS FOR name`. Use it against a server older than
+`SHOW USERS` — which is often the server a migration dump is taken from — or to export only some
+accounts. The two options cannot be combined.
+
+The export is two blocks of SQL, and their order matters. `CREATE USER IF NOT EXISTS` comes first,
+because a grant needs its account. The `GRANT` statements come last, because a grant resolves its
+object to an immutable id and fails while the database or table is still missing. In a single file
+the blocks sit at the top and at the bottom; under `--output-directory` they are written as
+`users.sql` and `grants.sql`, to run around the per-database files:
+
+```shell
+camus-cli -c "Endpoint=http://db1.internal:5095;Database=test" -f backup/users.sql
+camus-cli -c "Endpoint=http://db1.internal:5095;Database=test" -f backup/shop.sql
+camus-cli -c "Endpoint=http://db1.internal:5095;Database=test" -f backup/grants.sql
+```
+
+Three limits come with it, and the export states each one in a comment at the top of the block:
+
+- **No password is exported.** The server stores a salted verifier, never the password, and
+  `CREATE USER` accepts cleartext only, so no statement can restore a login unchanged. Each account
+  is created without a password. The server refuses every login to an account with no password, so a
+  restored account stays closed until you set one with
+  `ALTER USER name IDENTIFIED BY '…';`. It also means the dump file is no more sensitive than it
+  already was.
+- **Superuser status is not exported.** It is granted only by the bootstrap user at server start, and
+  `SHOW GRANTS` does not report it, so an account that was a superuser comes back as an ordinary
+  account.
+- **An older server cannot list the accounts.** `--all-users` needs `SHOW USERS` and
+  `SHOW GRANTS FOR *`, and camus-dump says so when the server rejects them. Against such a server,
+  name the accounts with `--users`. A name that no account carries fails the dump rather than being
+  passed over, because an account silently missing from the dump is the problem these options exist
+  to prevent.
+
+`--all-users` needs a superuser. `--users` needs one too, except for reading your own account.
 
 ### Point in time
 
@@ -156,7 +216,13 @@ A dump holds every row of the database, so `-o` and `--output-directory` create 
 
 Every type CamusDB stores is dumped as a literal that parses back to the same value: `OID`, `STRING`, `INT64`, `FLOAT64`, `FLOAT32`, `BOOL`, `BYTES` (as `X'…'`), `DATE`, `DATETIME`, `UUID`, `ARRAY` (as `ARRAY[…]`) and `NULL`.
 
-Strings use CamusDB's two literal forms: the plain `'…'` form, which does no escape processing, for everything except values containing a control character, which use the `E'…'` escape form. Any string round-trips, including one holding a backslash, a trailing backslash, both quote characters, or a newline.
+Strings use CamusDB's two literal forms. The plain `'…'` form does no escape processing: a backslash is an ordinary character, and the only special sequence is a doubled quote. The `E'…'` escape form reads a backslash as an escape. A value goes into the escape form when it holds a control character, which the plain form cannot carry, **or a backslash**, and inside that form a backslash is always doubled and a quote is always written `''`, never `\'`.
+
+That last rule is what makes the file reloadable, and it is worth stating why. A client reads the dump before the server does, and it cuts the file into statements at the `;` characters that stand outside a string. Such a splitter has to decide what closes a string: `camus-cli` reads `\'` as an escaped quote, the server reads it as a backslash followed by the closing quote. So a value that ends with a backslash has no plain spelling the two agree on — `'…\'` closes the string for the server and leaves it open for the splitter, which then swallows the statement terminator and merges the next statement into this one. The escape form with every backslash doubled ends at the same character under either reading, and the server decodes it to the original value.
+
+The same rewrite is applied to the `CREATE TABLE` text the server reports, so a `DEFAULT` or a `COMMENT` ending in a backslash is written in the escape form as well.
+
+Any string round-trips, including one holding a backslash, a trailing backslash, both quote characters, a newline, or a NUL.
 
 Indexes — unique, multi-column, and covering indexes with `INCLUDE` columns — are dumped both inline in `CREATE TABLE` and as separate `CREATE INDEX IF NOT EXISTS` statements, so a dump taken with `--no-create-table` still carries them, and `--defer-indexes` can build them after the rows have loaded. The `IF NOT EXISTS` makes the separate statements a no-op when the table definition already created the index.
 

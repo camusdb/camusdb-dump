@@ -4,3 +4,5 @@ CamusDB.Dump/.vs
 CamusDB.Dump/nupkg/
 .DS_Store
 .vs
+.claude/settings.local.json
+.serena/

@@ -44,17 +44,22 @@ internal static class ConnectionFactory
     private static readonly string[] SecretKeys = ["Password", "Pwd", "AccessToken"];
 
     /// <summary>
-    /// Every key the driver reads, in the exact spelling it reads it by. Its settings dictionary
-    /// compares keys case sensitively, so a key written as <c>endpoint=</c> in <c>--connection-source</c>
-    /// reaches the driver but is never looked up, and the default silently applies instead. Each key is
-    /// therefore mapped back to this spelling on the way in.
+    /// Every key the driver reads, in the spelling it documents. Each key in <c>--connection-source</c> is
+    /// mapped back to this spelling on the way in.
+    ///
+    /// <para>Up to CamusDB.Client 0.11 this mapping was a correctness fix: the driver compared keys case
+    /// sensitively, so <c>endpoint=</c> reached it but was never looked up, and the default applied
+    /// instead. From 0.12 the driver ignores case itself, so the mapping only keeps the settings in one
+    /// predictable spelling. It stays because it costs nothing and because every lookup in this class
+    /// uses these spellings. A key not listed here passes through unchanged, so a key a later driver
+    /// adds still works; it is listed here so the list stays an honest inventory.</para>
     /// </summary>
     private static readonly Dictionary<string, string> CanonicalKeys = new[]
     {
-        "AccessToken", "AutoPrepareMinUsages", "BackupEndpoint", "BackupTimeout", "ChannelPoolSize",
-        "CoalescingDelay", "CoalescingThreshold", "Database", "Endpoint", "IsolationLevel", "Locking",
-        "MaxAutoPrepare", "Password", "Protocol", "Pwd", "Timeout", "TokenLifetime", "TransactionMode",
-        "Uid", "User", "UserId", "Username",
+        "AccessToken", "AllowInsecureCredentials", "AutoPrepareMinUsages", "BackupEndpoint", "BackupTimeout",
+        "ChannelPoolSize", "CoalescingDelay", "CoalescingThreshold", "Database", "Endpoint", "IsolationLevel",
+        "Locking", "MaxAutoPrepare", "Password", "Protocol", "Pwd", "RoutingMaxHintAge", "RoutingMode",
+        "RoutingNodes", "Timeout", "TokenLifetime", "TransactionMode", "Uid", "User", "UserId", "Username",
     }.ToDictionary(key => key, key => key, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
