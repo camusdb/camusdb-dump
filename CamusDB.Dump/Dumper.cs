@@ -31,6 +31,10 @@ internal sealed partial class Dumper
 
     private readonly DumpWarnings warnings;
 
+    // Latched false the first time a server rejects WITHOUT INDEXES, so an older server costs one
+    // failed statement for the whole dump rather than one per table.
+    private bool serverRendersIndexFreeDdl = true;
+
     /// <summary>The instant the rows are read at, or null when the dump reads the latest data.</summary>
     private readonly PointInTime? pointInTime;
 
@@ -169,10 +173,54 @@ internal sealed partial class Dumper
         return tables;
     }
 
+    /// <summary>
+    /// Opens the reader for the table DDL, asking for the index-free form when the dump defers index
+    /// builds. A server that predates <c>WITHOUT INDEXES</c> rejects the statement; the dump then
+    /// falls back to the full DDL and warns, because continuing silently would produce a file whose
+    /// <c>--defer-indexes</c> is inert — the very defect this option was fixed for.
+    /// </summary>
+    private async Task<CamusDataReader> ReadTableDefinitionAsync(string table, CancellationToken cancellationToken)
+    {
+        string quoted = SqlLiteral.Identifier(table, "table");
+
+        if (opts.DeferIndexes && serverRendersIndexFreeDdl)
+        {
+            try
+            {
+                using CamusCommand deferred = CreateCommand("SHOW CREATE TABLE " + quoted + " WITHOUT INDEXES");
+
+                return await deferred.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (CamusException)
+            {
+                serverRendersIndexFreeDdl = false;
+
+                warnings.Note(
+                    "defer-indexes-unsupported",
+                    "--defer-indexes had no effect: this server does not support "
+                    + "SHOW CREATE TABLE ... WITHOUT INDEXES, so each table's indexes are declared in its "
+                    + "CREATE TABLE and are built as the rows load. Upgrade the server to defer them.");
+            }
+        }
+
+        using CamusCommand cmd = CreateCommand("SHOW CREATE TABLE " + quoted);
+
+        return await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads the table DDL and writes it out.
+    ///
+    /// <para>With <c>--defer-indexes</c> the DDL is requested as
+    /// <c>SHOW CREATE TABLE … WITHOUT INDEXES</c>. Without that, the DDL declares every secondary
+    /// index inline as a <c>KEY</c> clause, the index is built before the first row and maintained
+    /// row by row, and relocating the <c>CREATE INDEX</c> statements after the data achieves nothing
+    /// — which is exactly what the option did before. The primary key is still rendered: it is part
+    /// of the table definition and cannot be created by a later <c>CREATE INDEX</c>.</para>
+    /// </summary>
     private async Task DumpTableDefinitionAsync(string table, CancellationToken cancellationToken)
     {
-        using CamusCommand cmd = CreateCommand("SHOW CREATE TABLE " + SqlLiteral.Identifier(table, "table"));
-        using CamusDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        using CamusDataReader reader = await ReadTableDefinitionAsync(table, cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -223,7 +271,7 @@ internal sealed partial class Dumper
                 continue;
 
             bool unique = reader.GetString(reader.GetOrdinal("Non_unique")) == "0";
-            string columns = ColumnList(reader, "Columns");
+            string columns = IndexKeyColumnList(reader);
             string include = ColumnList(reader, "Include");
 
             if (columns.Length == 0)
@@ -248,9 +296,83 @@ internal sealed partial class Dumper
                 sb.Append(" INCLUDE (").Append(include).Append(')');
 
             statements.Add(sb.Append(';').ToString());
+
+            // CREATE INDEX has no inline COMMENT clause, so a commented index needs a second
+            // statement. It is emitted next to its index rather than collected separately, so the
+            // two move together when --defer-indexes relocates the index build after the rows.
+            string comment = OptionalString(reader, "Comment");
+
+            if (comment.Length > 0)
+            {
+                statements.Add(
+                    "COMMENT ON INDEX "
+                    + SqlLiteral.Identifier(table, "table") + "." + SqlLiteral.Identifier(name, "index")
+                    + " IS " + SqlLiteral.Quote(comment) + ";");
+            }
         }
 
         return statements;
+    }
+
+    /// <summary>
+    /// The index's key columns, each quoted and carrying its sort direction.
+    ///
+    /// <para><c>SHOW INDEXES</c> reports the directions in a <c>Directions</c> field that is a
+    /// parallel list to <c>Columns</c> — the direction is deliberately not folded into <c>Columns</c>,
+    /// because every element of that field is an identifier this method quotes. <c>ASC</c> is left
+    /// implicit so an all-ascending index renders exactly as it did before directions were carried.</para>
+    ///
+    /// <para>A server older than the release that added <c>Directions</c> does not send the field.
+    /// The index is then rendered all-ascending, which is what this tool emitted for every index
+    /// before — a descending index dumped from such a server still restores ascending, and no
+    /// rewriting here can recover a direction the server never sent.</para>
+    /// </summary>
+    private static string IndexKeyColumnList(CamusDataReader reader)
+    {
+        int columnsOrdinal = reader.GetOrdinal("Columns");
+
+        if (reader.IsDBNull(columnsOrdinal))
+            return "";
+
+        string[] columns = Split(reader.GetString(columnsOrdinal));
+        string[] directions = Split(OptionalString(reader, "Directions"));
+
+        StringBuilder sb = new();
+
+        for (int i = 0; i < columns.Length; i++)
+        {
+            if (i > 0)
+                sb.Append(", ");
+
+            sb.Append(SqlLiteral.Identifier(columns[i], "index column"));
+
+            // Shorter or absent directions mean "ascending", which is also the pre-directions default.
+            if (i < directions.Length && string.Equals(directions[i], "DESC", StringComparison.OrdinalIgnoreCase))
+                sb.Append(" DESC");
+        }
+
+        return sb.ToString();
+    }
+
+    private static string[] Split(string value)
+        => value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>
+    /// Reads a field that a server older than this tool may not send at all. <c>GetOrdinal</c> throws
+    /// for an unknown name, so the lookup is done over the reader's own field names instead: a dump
+    /// against an older server must degrade, not fail.
+    /// </summary>
+    private static string OptionalString(CamusDataReader reader, string field)
+    {
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            if (!string.Equals(reader.GetName(i), field, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return reader.IsDBNull(i) ? "" : reader.GetString(i);
+        }
+
+        return "";
     }
 
     private void WriteIndexes(List<string> statements)

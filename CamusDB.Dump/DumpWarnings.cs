@@ -29,12 +29,16 @@ public sealed class DumpWarnings
 
     private readonly Dictionary<string, (string Message, long Count)> issues = new(StringComparer.Ordinal);
 
+    // Notes are kept apart from issues because a note is about the dump as a whole, not about a
+    // number of offending values, so the "(N values)" suffix issues carry would misdescribe it.
+    private readonly Dictionary<string, string> notes = new(StringComparer.Ordinal);
+
     public DumpWarnings(bool strict)
     {
         this.strict = strict;
     }
 
-    public bool Any => issues.Count > 0;
+    public bool Any => issues.Count > 0 || notes.Count > 0;
 
     public void Unrepresentable(string table, string column, string reason)
     {
@@ -45,6 +49,13 @@ public sealed class DumpWarnings
 
         Record($"unrepresentable|{table}|{column}", message);
     }
+
+    /// <summary>
+    /// Records a condition affecting the dump as a whole rather than a particular value — for
+    /// example an option the server is too old to honour. Repeats under the same
+    /// <paramref name="key"/> collapse to one line.
+    /// </summary>
+    public void Note(string key, string message) => notes[key] = message;
 
     public void Truncated(string table, string column, string reason)
     {
@@ -59,9 +70,11 @@ public sealed class DumpWarnings
     }
 
     public IEnumerable<string> Summaries()
-        => issues.Values
-            .OrderBy(issue => issue.Message, StringComparer.Ordinal)
-            .Select(issue => $"{issue.Message} ({issue.Count} value{(issue.Count == 1 ? "" : "s")})");
+        => notes.Values
+            .OrderBy(message => message, StringComparer.Ordinal)
+            .Concat(issues.Values
+                .OrderBy(issue => issue.Message, StringComparer.Ordinal)
+                .Select(issue => $"{issue.Message} ({issue.Count} value{(issue.Count == 1 ? "" : "s")})"));
 
     /// <summary>
     /// Writes the collected warnings to standard error. <paramref name="database"/> names the database

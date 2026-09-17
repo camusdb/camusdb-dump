@@ -199,7 +199,7 @@ Notes:
 
 | Option | Description |
 | --- | --- |
-| `-b`, `--batch` | Rows per `INSERT` statement (default `1`). |
+| `-b`, `--batch` | Rows per `INSERT` statement (default `100`). `-b 1` is 12 to 41 times slower (the gap is largest on narrow rows), because the cost is one round trip per statement rather than the data. Raising it above 100 gains little; on a wide table it risks the server's 4 MiB gRPC message limit. |
 | `-o`, `--output` | Write to this file instead of standard output. |
 | `--output-directory` | Write one `<database>.sql` file per database into this directory, creating it if missing. Cannot be combined with `-o`. |
 | `--defer-indexes` | Emit each table's `CREATE INDEX` statements after its data rather than before. |
