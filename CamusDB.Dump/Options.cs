@@ -96,7 +96,7 @@ public sealed class Options
     [Option("defer-indexes", Required = false, HelpText = "Emit the CREATE INDEX statements after a table's data rather than before it.")]
     public bool DeferIndexes { get; set; }
 
-    [Option("add-drop-table", Required = false, HelpText = "Emit DROP TABLE IF EXISTS before each CREATE TABLE.")]
+    [Option("add-drop-table", Required = false, HelpText = "Emit DROP TABLE IF EXISTS for every dumped table before the first CREATE TABLE, child tables before the tables they reference.")]
     public bool AddDropTable { get; set; }
 
     [Option("if-not-exists", Required = false, HelpText = "Emit CREATE TABLE IF NOT EXISTS so the dump can be replayed onto an existing schema.")]
@@ -113,4 +113,7 @@ public sealed class Options
 
     [Option("no-header", Required = false, HelpText = "Omit the leading comment header.")]
     public bool NoHeader { get; set; }
+
+    [Option("no-progress", Required = false, HelpText = "Do not show the progress bars on standard error when the dump is written to --output or --output-directory.")]
+    public bool NoProgress { get; set; }
 }

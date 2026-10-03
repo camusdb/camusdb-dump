@@ -77,43 +77,22 @@ internal sealed class DumpSession
             if (string.IsNullOrEmpty(opts.OutputDirectory))
                 shared = OpenSharedOutput();
 
-            // Accounts come first: a GRANT needs its account, and so does anything else granted later.
-            if (users is not null)
+            if (DumpProgress.IsWanted(opts))
             {
-                if (shared is not null)
-                    users.WriteUsers(shared);
-                else
-                    await WriteExportFileAsync(UsersFileName, users.WriteUsers).ConfigureAwait(false);
+                // Everything that writes to the terminal on its own goes first. Written while the bars
+                // redraw, the password prompt and the warnings are torn apart by them.
+                ConnectionFactory.Prepare(opts);
+
+                if (!string.IsNullOrEmpty(opts.OutputDirectory))
+                    CreateOutputDirectory(opts.OutputDirectory);
+
+                await DumpProgress.RunAsync(
+                    progress => WriteDumpAsync(databases, pointInTime, users, shared, progress, cancellationToken))
+                    .ConfigureAwait(false);
             }
-
-            foreach (string database in databases)
+            else
             {
-                DumpWarnings warnings = new(opts.Strict);
-                collected.Add((database, warnings));
-
-                TextWriter output = shared ?? OpenDatabaseFile(database);
-
-                try
-                {
-                    await DumpDatabaseAsync(database, pointInTime, output, warnings, cancellationToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    await output.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-
-                    if (!ReferenceEquals(output, shared))
-                        await output.DisposeAsync().ConfigureAwait(false);
-                }
-            }
-
-            // Grants come last: each one resolves its object to an immutable id, so the database or the
-            // table it covers has to exist by the time it runs.
-            if (users is not null)
-            {
-                if (shared is not null)
-                    users.WriteGrants(shared);
-                else
-                    await WriteExportFileAsync(GrantsFileName, users.WriteGrants).ConfigureAwait(false);
+                await WriteDumpAsync(databases, pointInTime, users, shared, DumpProgress.None, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (DumpException exception)
@@ -158,11 +137,68 @@ internal sealed class DumpSession
         return 0;
     }
 
+    /// <summary>
+    /// Writes the accounts, every database, and the grants, in that order, to <paramref name="shared"/>
+    /// or, when it is null, to one file each under <c>--output-directory</c>.
+    /// </summary>
+    private async Task WriteDumpAsync(
+        List<string> databases,
+        PointInTime? pointInTime,
+        UserExport? users,
+        TextWriter? shared,
+        DumpProgress progress,
+        CancellationToken cancellationToken)
+    {
+        // Accounts come first: a GRANT needs its account, and so does anything else granted later.
+        if (users is not null)
+        {
+            if (shared is not null)
+                users.WriteUsers(shared);
+            else
+                await WriteExportFileAsync(UsersFileName, users.WriteUsers).ConfigureAwait(false);
+        }
+
+        foreach (string database in databases)
+        {
+            DumpWarnings warnings = new(opts.Strict);
+            collected.Add((database, warnings));
+
+            progress.DatabaseStarted(database);
+
+            TextWriter output = shared ?? OpenDatabaseFile(database);
+
+            try
+            {
+                await DumpDatabaseAsync(database, pointInTime, output, warnings, progress, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await output.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+
+                if (!ReferenceEquals(output, shared))
+                    await output.DisposeAsync().ConfigureAwait(false);
+            }
+
+            progress.DatabaseCompleted();
+        }
+
+        // Grants come last: each one resolves its object to an immutable id, so the database or the
+        // table it covers has to exist by the time it runs.
+        if (users is not null)
+        {
+            if (shared is not null)
+                users.WriteGrants(shared);
+            else
+                await WriteExportFileAsync(GrantsFileName, users.WriteGrants).ConfigureAwait(false);
+        }
+    }
+
     private async Task DumpDatabaseAsync(
         string database,
         PointInTime? pointInTime,
         TextWriter output,
         DumpWarnings warnings,
+        DumpProgress progress,
         CancellationToken cancellationToken)
     {
         await using CamusConnection connection = await ConnectionFactory.CreateAsync(opts, database, cancellationToken).ConfigureAwait(false);
@@ -176,7 +212,7 @@ internal sealed class DumpSession
 
         try
         {
-            Dumper dumper = new(connection, transaction, opts, database, pointInTime, output, warnings);
+            Dumper dumper = new(connection, transaction, opts, database, pointInTime, output, warnings, progress);
 
             await dumper.RunAsync(cancellationToken).ConfigureAwait(false);
         }

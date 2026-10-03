@@ -203,12 +203,13 @@ Notes:
 | `-o`, `--output` | Write to this file instead of standard output. |
 | `--output-directory` | Write one `<database>.sql` file per database into this directory, creating it if missing. Cannot be combined with `-o`. |
 | `--defer-indexes` | Emit each table's `CREATE INDEX` statements after its data rather than before. |
-| `--add-drop-table` | Emit `DROP TABLE IF EXISTS` before each `CREATE TABLE`. |
+| `--add-drop-table` | Emit `DROP TABLE IF EXISTS` for every dumped table before the first `CREATE TABLE`, each child table before the tables it references (see [Foreign keys](#foreign-keys)). |
 | `--if-not-exists` | Emit `CREATE TABLE IF NOT EXISTS`, so the dump replays onto an existing schema. |
 | `--create-database` | Emit `CREATE DATABASE IF NOT EXISTS` for the dumped database, followed by `USE`. Implied by `--all-databases`. |
 | `--single-transaction` | Read every table from one lock-free serializable snapshot instead of a fixed past instant. |
 | `--strict` | Fail instead of emitting `NULL` for a value that has no SQL literal (see below). |
 | `--no-header` | Omit the leading comment header. |
+| `--no-progress` | Do not show the progress bars. Without it, a dump written with `-o` or `--output-directory` shows one bar per database on standard error, with the table it reads and the rows written so far. The bars count tables, not rows. They are never shown when the dump goes to standard output, or when standard error is not a terminal. |
 
 A dump holds every row of the database, so `-o` and `--output-directory` create files that only their owner can read or write, and `--output-directory` creates the directory the same way. An existing directory keeps the permissions it has; camus-dump warns when other users can write to it. A path that is already a symbolic link is refused rather than followed, because the dump would truncate whatever is at the far end.
 
@@ -231,6 +232,23 @@ One thing has no CamusDB SQL literal, and `camus-dump` reports it rather than em
 - **Non-finite floats** — `NaN`, `+Infinity`, `-Infinity`. CamusDB's float literal has no form for them. The value is dumped as `NULL`.
 
 It is counted and printed to standard error at the end of the run, and repeated as `-- WARNING` lines in the dump itself; `--strict` turns it into a failure instead. `DATETIME` values are truncated to milliseconds, the finest precision a CamusDB literal carries, and a dump that truncates one says so the same way.
+
+### Foreign keys
+
+The server checks a foreign key when the statement that writes a row ends. A table that references another table can only be created after that table exists, and its rows can only be inserted after the rows they reference. So camus-dump writes the dump in that order:
+
+- **Tables.** Each table comes after every table it references. Tables that have no foreign key between them keep the order of `SHOW TABLES`. The server refuses a cycle of references between tables, so this order always exists.
+- **Rows of a table that references itself.** Each row comes after the row it references, or in the same `INSERT`. A `NULL` in any referencing column means no reference. To put the rows in this order, camus-dump reads the whole table into memory before it writes the first row. Every other table is streamed.
+- **Rows that reference each other in a cycle**, such as two employees who are each the other's manager. No order of separate statements is valid for them. They go into one `INSERT` at the end of the table, which ignores `--batch`, and camus-dump prints a warning.
+- **Drops.** With `--add-drop-table`, all the `DROP TABLE IF EXISTS` statements come first, child tables before parent tables. The server refuses to drop a table that another table references.
+
+camus-dump reads the foreign keys from the `SHOW CREATE TABLE` text, the only place where the server reports them. Against a server that does not render them there, the dump keeps the order of `SHOW TABLES`.
+
+Some limits remain:
+
+- When `--table` or `--exclude-table` leaves out a table that a dumped table references, camus-dump prints a warning. The load then needs that table to exist already, with the referenced rows.
+- A `--where` condition can leave out a parent row while it keeps a child row. The load then fails on the child row.
+- With `--add-drop-table`, a drop fails when the target database has a table that is not in the dump and references a dumped table.
 
 ## Contribution
 

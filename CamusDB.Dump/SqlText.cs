@@ -186,7 +186,7 @@ internal static class SqlText
     /// as a prefix only when it does not itself continue an identifier, so the <c>x</c> of
     /// <c>max'…'</c> is not read as one. Case is folded, so <c>e</c> and <c>E</c> both report <c>E</c>.
     /// </summary>
-    private static char PrefixBefore(string sql, int quote)
+    internal static char PrefixBefore(string sql, int quote)
     {
         if (quote == 0)
             return '\0';
@@ -267,7 +267,7 @@ internal static class SqlText
     /// The index just past the delimiter that closes the run starting at <paramref name="start"/>, or -1
     /// when it is never closed. A doubled delimiter stands for one character and does not close the run.
     /// </summary>
-    private static int SkipDelimited(string sql, int start, char delimiter, bool backslashEscapes)
+    internal static int SkipDelimited(string sql, int start, char delimiter, bool backslashEscapes)
     {
         int i = start + 1;
 

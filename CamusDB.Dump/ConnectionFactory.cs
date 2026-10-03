@@ -73,6 +73,15 @@ internal static class ConnectionFactory
     private static bool plaintextWarned;
 
     /// <summary>
+    /// Runs everything a connection says on the terminal — the <c>--ask-password</c> prompt and the
+    /// plaintext-endpoint warning — without opening one. The progress display calls it first: a prompt
+    /// or a warning written while the display redraws is torn apart by it, and a prompt hidden that way
+    /// looks like a hang.
+    /// </summary>
+    public static void Prepare(Options opts)
+        => WarnOnPlaintextEndpoint(BuildSettings(opts, database: null, withCredentials: true));
+
+    /// <summary>
     /// Opens a connection and proves it works with a ping. <paramref name="database"/> overrides the
     /// database the options resolve to, which is how <c>--all-databases</c> gets one connection per
     /// database — there is no <c>USE</c> statement to switch an open one over.
