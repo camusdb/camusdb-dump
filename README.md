@@ -215,7 +215,7 @@ A dump holds every row of the database, so `-o` and `--output-directory` create 
 
 ### Data types and indexes
 
-Every type CamusDB stores is dumped as a literal that parses back to the same value: `OID`, `STRING`, `INT64`, `FLOAT64`, `FLOAT32`, `BOOL`, `BYTES` (as `X'…'`), `DATE`, `DATETIME`, `UUID`, `ARRAY` (as `ARRAY[…]`) and `NULL`.
+Every type CamusDB stores is dumped as a literal that parses back to the same value: `OID`, `STRING`, `INT64`, `FLOAT64`, `FLOAT32`, `NUMERIC` (as the exact typed literal `NUMERIC '…'`), `BOOL`, `BYTES` (as `X'…'`), `DATE`, `DATETIME`, `UUID`, `ARRAY` (as `ARRAY[…]`) and `NULL`.
 
 Strings use CamusDB's two literal forms. The plain `'…'` form does no escape processing: a backslash is an ordinary character, and the only special sequence is a doubled quote. The `E'…'` escape form reads a backslash as an escape. A value goes into the escape form when it holds a control character, which the plain form cannot carry, **or a backslash**, and inside that form a backslash is always doubled and a quote is always written `''`, never `\'`.
 

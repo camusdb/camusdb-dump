@@ -17,7 +17,8 @@ namespace CamusDB.Dump;
 ///
 /// <para>Every type CamusDB stores has a literal form. Numbers and booleans are written directly;
 /// <c>date</c>, <c>datetime</c> and <c>uuid</c> ride in as string literals the server coerces on
-/// INSERT; <c>bytes</c> uses <c>X'…'</c> and arrays use <c>ARRAY[…]</c>. The only values with no
+/// INSERT; <c>numeric</c> uses the typed literal <c>NUMERIC '…'</c>, so that no digit goes through a
+/// double; <c>bytes</c> uses <c>X'…'</c> and arrays use <c>ARRAY[…]</c>. The only values with no
 /// literal at all are the non-finite floats (NaN, ±Infinity), which are reported through
 /// <see cref="DumpWarnings"/> rather than silently mangled.</para>
 ///
@@ -57,6 +58,12 @@ internal static class SqlLiteral
 
             case ColumnType.Float32:
                 return RenderDouble((float)value.FloatValue, table, column, warnings);
+
+            // The typed literal keeps every digit; a bare 1.5 would parse as FLOAT64 and round.
+            case ColumnType.Numeric:
+                return value.StrValue is null
+                    ? "NULL"
+                    : "NUMERIC " + Quote(value.StrValue);
 
             case ColumnType.Bool:
                 return value.BoolValue ? "true" : "false";
