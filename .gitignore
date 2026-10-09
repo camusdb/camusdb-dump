@@ -6,3 +6,4 @@ CamusDB.Dump/nupkg/
 .vs
 .claude/settings.local.json
 .serena/
+.idea/
