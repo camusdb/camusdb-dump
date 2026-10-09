@@ -28,13 +28,6 @@ namespace CamusDB.Dump;
 /// </summary>
 internal static class SqlLiteral
 {
-    /// <summary>
-    /// Custom format that never falls back to scientific notation, which the CamusDB lexer does not
-    /// accept (its float literal is strictly <c>digits.digits</c>). The leading <c>0.0</c> also
-    /// guarantees the decimal point a whole-valued double would otherwise lose.
-    /// </summary>
-    private static readonly string PlainDoubleFormat = "0.0" + new string('#', 330);
-
     public static string Render(in ColumnValue value, string table, string column, DumpWarnings warnings)
     {
         switch (value.Type)
@@ -219,11 +212,13 @@ internal static class SqlLiteral
 
         string round = value.ToString("R", CultureInfo.InvariantCulture);
 
-        // "R" reaches for scientific notation on very large and very small magnitudes; the plain format
-        // spells those out, since the lexer's float literal has no exponent form.
+        // "R" uses an exponent for very large and very small magnitudes (1.2345678901234567E+300,
+        // 5E-324). The lexer accepts that form since server v0.10.4, and it keeps every digit; a custom
+        // format such as "0.0###" spells the number out but keeps only 15 significant digits.
         if (round.Contains('E') || round.Contains('e'))
-            return value.ToString(PlainDoubleFormat, CultureInfo.InvariantCulture);
+            return round;
 
+        // A whole number needs the point, or it reads back as INT64.
         return round.Contains('.') ? round : round + ".0";
     }
 
