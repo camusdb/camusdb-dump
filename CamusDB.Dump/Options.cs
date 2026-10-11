@@ -84,6 +84,9 @@ public sealed class Options
     [Option("output-directory", Required = false, HelpText = "Write one <database>.sql file per database into this directory. The directory is created if missing.")]
     public string? OutputDirectory { get; set; }
 
+    [Option('z', "compress", Required = false, HelpText = "Compress the dump: gzip or none. Defaults to gzip when --output ends in .gz, and to none otherwise. Under --output-directory, gzip names the files <database>.sql.gz.")]
+    public string? Compress { get; set; }
+
     [Option("no-create-table", Required = false, HelpText = "Do not emit CREATE TABLE statements.")]
     public bool NoCreateTable { get; set; }
 

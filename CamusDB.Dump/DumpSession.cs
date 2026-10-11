@@ -29,11 +29,13 @@ internal sealed class DumpSession
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     };
 
-    /// <summary>Where the <c>CREATE USER</c> statements go under <c>--output-directory</c>.</summary>
-    private const string UsersFileName = "users.sql";
+    /// <summary>Where the <c>CREATE USER</c> statements go under <c>--output-directory</c>, before the extension.</summary>
+    private const string UsersFileName = "users";
 
-    /// <summary>Where the <c>GRANT</c> statements go under <c>--output-directory</c>.</summary>
-    private const string GrantsFileName = "grants.sql";
+    /// <summary>Where the <c>GRANT</c> statements go under <c>--output-directory</c>, before the extension.</summary>
+    private const string GrantsFileName = "grants";
+
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     private readonly Options opts;
 
@@ -42,6 +44,12 @@ internal sealed class DumpSession
 
     /// <summary>Guards the shared-directory warning, which belongs in the output once per run.</summary>
     private bool directoryWarned;
+
+    /// <summary>Whether every output — the file, the files under the directory, or standard output — is gzip.</summary>
+    private bool gzip;
+
+    /// <summary>The extension of each file written under <c>--output-directory</c>.</summary>
+    private string FileExtension => gzip ? ".sql.gz" : ".sql";
 
     public DumpSession(Options opts)
     {
@@ -59,6 +67,8 @@ internal sealed class DumpSession
             if (!string.IsNullOrEmpty(opts.Output) && !string.IsNullOrEmpty(opts.OutputDirectory))
                 throw new DumpException("--output and --output-directory cannot both be given.");
 
+            gzip = ResolveCompression();
+
             // Fixed before the first statement goes out, so every table of every database is read at the
             // same instant rather than at whatever moment its own scan happened to start.
             PointInTime? pointInTime = PointInTime.Resolve(opts);
@@ -72,7 +82,7 @@ internal sealed class DumpSession
                 : null;
 
             if (users is not null && !string.IsNullOrEmpty(opts.OutputDirectory))
-                RequireExportFileNamesFree(databases);
+                RequireExportFileNamesFree(databases, FileExtension);
 
             if (string.IsNullOrEmpty(opts.OutputDirectory))
                 shared = OpenSharedOutput();
@@ -234,7 +244,7 @@ internal sealed class DumpSession
     /// the other. The comparison ignores case, because so do several file systems.
     /// </summary>
     /// <exception cref="DumpException">A selected database is named after an export file.</exception>
-    private static void RequireExportFileNamesFree(List<string> databases)
+    private static void RequireExportFileNamesFree(List<string> databases, string extension)
     {
         foreach (string database in databases)
         {
@@ -244,7 +254,7 @@ internal sealed class DumpSession
 
             throw new DumpException(
                 $"the database '{database}' and the account export would both be written to " +
-                $"'{database}.sql' under --output-directory, and one would overwrite the other. " +
+                $"'{database}{extension}' under --output-directory, and one would overwrite the other. " +
                 "Dump that database on its own with --database and --output, or export the accounts in a " +
                 "separate run.");
         }
@@ -258,7 +268,7 @@ internal sealed class DumpSession
     {
         CreateOutputDirectory(opts.OutputDirectory!);
 
-        TextWriter output = OpenDumpFile(Path.Combine(opts.OutputDirectory!, fileName));
+        TextWriter output = OpenDumpFile(Path.Combine(opts.OutputDirectory!, fileName + FileExtension));
 
         try
         {
@@ -271,10 +281,50 @@ internal sealed class DumpSession
         }
     }
 
+    /// <summary>
+    /// Decides whether the dump is gzip. An explicit <c>--compress</c> wins; without it, an
+    /// <c>--output</c> name that ends in <c>.gz</c> asks for gzip, because a plain dump under that name
+    /// is a file every tool that reads it gets wrong.
+    /// </summary>
+    /// <exception cref="DumpException">The method is unknown, or gzip would go to a terminal.</exception>
+    private bool ResolveCompression()
+    {
+        switch (opts.Compress?.Trim().ToLowerInvariant())
+        {
+            case null or "":
+                return opts.Output?.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) == true;
+
+            case "none":
+                return false;
+
+            case "gzip":
+                break;
+
+            default:
+                throw new DumpException($"unknown --compress method '{opts.Compress}'. Use gzip or none.");
+        }
+
+        // Compressed bytes on a terminal are noise at best, and at worst escape sequences the terminal
+        // acts on.
+        if (string.IsNullOrEmpty(opts.Output) && string.IsNullOrEmpty(opts.OutputDirectory) && !Console.IsOutputRedirected)
+            throw new DumpException(
+                "a compressed dump is not written to a terminal. Redirect standard output to a file or a pipe, or pass --output.");
+
+        return true;
+    }
+
+    /// <summary>
+    /// The stream every database goes to when there is only one: <c>--output</c>, or standard output.
+    /// Standard output is gzip-wrapped like a file, and gets a writer of its own so that disposing it
+    /// writes the gzip trailer.
+    /// </summary>
     private TextWriter OpenSharedOutput()
-        => string.IsNullOrEmpty(opts.Output)
-            ? Console.Out
-            : OpenDumpFile(opts.Output);
+    {
+        if (!string.IsNullOrEmpty(opts.Output))
+            return OpenDumpFile(opts.Output);
+
+        return gzip ? CreateWriter(Console.OpenStandardOutput()) : Console.Out;
+    }
 
     /// <summary>
     /// The <c>&lt;database&gt;.sql</c> file a database is dumped to under <c>--output-directory</c>. The name
@@ -299,7 +349,7 @@ internal sealed class DumpSession
 
         CreateOutputDirectory(opts.OutputDirectory!);
 
-        return OpenDumpFile(Path.Combine(opts.OutputDirectory!, database + ".sql"));
+        return OpenDumpFile(Path.Combine(opts.OutputDirectory!, database + FileExtension));
     }
 
     /// <summary>
@@ -344,7 +394,7 @@ internal sealed class DumpSession
     /// and writes into a directory shared with others; a link placed at the name the dump is about to use
     /// would otherwise be followed, and the file at the far end truncated and overwritten.</para>
     /// </summary>
-    private static TextWriter OpenDumpFile(string path)
+    private TextWriter OpenDumpFile(string path)
     {
         RefuseSymbolicLink(path);
 
@@ -363,7 +413,19 @@ internal sealed class DumpSession
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(stream.SafeFileHandle, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
-        return new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        return CreateWriter(stream);
+    }
+
+    /// <summary>
+    /// The text writer over an output stream, through gzip when the dump is compressed. Disposing the
+    /// writer finishes the gzip member and closes <paramref name="stream"/>.
+    /// </summary>
+    private TextWriter CreateWriter(Stream stream)
+    {
+        if (gzip)
+            stream = new GzipOutputStream(stream);
+
+        return new StreamWriter(stream, Utf8NoBom);
     }
 
     private static void RefuseSymbolicLink(string path)

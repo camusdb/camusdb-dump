@@ -202,6 +202,7 @@ Notes:
 | `-b`, `--batch` | Rows per `INSERT` statement (default `100`). `-b 1` is 12 to 41 times slower (the gap is largest on narrow rows), because the cost is one round trip per statement rather than the data. Raising it above 100 gains little; on a wide table it risks the server's 4 MiB gRPC message limit. |
 | `-o`, `--output` | Write to this file instead of standard output. |
 | `--output-directory` | Write one `<database>.sql` file per database into this directory, creating it if missing. Cannot be combined with `-o`. |
+| `-z`, `--compress` | `gzip` or `none`. Defaults to `gzip` when the `-o` file name ends in `.gz`, and to `none` otherwise. Applies to standard output as well, and under `--output-directory` names every file `<database>.sql.gz`. |
 | `--defer-indexes` | Emit each table's `CREATE INDEX` statements after its data rather than before. |
 | `--add-drop-table` | Emit `DROP TABLE IF EXISTS` for every dumped table before the first `CREATE TABLE`, each child table before the tables it references (see [Foreign keys](#foreign-keys)). |
 | `--if-not-exists` | Emit `CREATE TABLE IF NOT EXISTS`, so the dump replays onto an existing schema. |
@@ -210,6 +211,23 @@ Notes:
 | `--strict` | Fail instead of emitting `NULL` for a value that has no SQL literal (see below). |
 | `--no-header` | Omit the leading comment header. |
 | `--no-progress` | Do not show the progress bars. Without it, a dump written with `-o` or `--output-directory` shows one bar per database on standard error, with the table it reads and the rows written so far. The bars count tables, not rows. They are never shown when the dump goes to standard output, or when standard error is not a terminal. |
+
+A compressed dump is a plain gzip file. Restore it by decompressing it into the client:
+
+```shell
+camus-dump -e http://localhost:5096 -d mydb -o mydb.sql.gz
+gunzip -c mydb.sql.gz | camus-cli mydb -f -
+```
+
+camus-dump refuses to write compressed bytes to a terminal; redirect standard output, or pass `-o`. The same stream goes straight to object storage, which the cloud CLIs read from standard input:
+
+```shell
+set -o pipefail
+camus-dump -e https://db1.internal:5096 -d mydb -z gzip | gcloud storage cp - gs://backups/mydb.sql.gz
+camus-dump -e https://db1.internal:5096 -d mydb -z gzip | aws s3 cp - s3://backups/mydb.sql.gz
+```
+
+Both CLIs keep whatever they received when the dump fails partway, so the object can be a truncated dump that still decompresses cleanly. `pipefail` reports the failure in the exit status. Afterwards, the `-- Dump completed` comment tells a finished database from a cut one: it closes each database's section, so a dump of N databases holds N of them. `--no-header` leaves it out. Above about 50 GB, `aws s3 cp -` also needs `--expected-size`.
 
 A dump holds every row of the database, so `-o` and `--output-directory` create files that only their owner can read or write, and `--output-directory` creates the directory the same way. An existing directory keeps the permissions it has; camus-dump warns when other users can write to it. A path that is already a symbolic link is refused rather than followed, because the dump would truncate whatever is at the far end.
 
