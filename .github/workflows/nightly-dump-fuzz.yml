@@ -1,0 +1,259 @@
+name: Nightly dump fuzz
+
+# Builds random databases on a CamusDB server with the camusdb-ts driver: random tables, columns,
+# values, indexes, foreign keys, CHECK constraints, sequences and comments. It dumps them with
+# camus-dump, one file per database and one --all-databases file, loads each dump into a fresh
+# server with camus-cli, and checks that no row and no database object was lost or changed.
+#
+# The same run tests the driver. Every value it writes is read back over the other transport and
+# compared with what was written, and every value it reads is compared with the server's own text
+# form of it. See fuzz/README.md.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Seed to replay (default: the run id)'
+        required: false
+      databases:
+        description: 'How many databases to build'
+        required: false
+        default: '4'
+      image:
+        description: 'The CamusDB server image'
+        required: false
+        default: 'camusdb/camusdb:latest'
+      driver_ref:
+        description: 'The camusdb-ts branch, tag or commit to test'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: nightly-dump-fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CAMUS_IMAGE: ${{ inputs.image || 'camusdb/camusdb:latest' }}
+  DRIVER_REF: ${{ inputs.driver_ref || 'main' }}
+  SEED: ${{ inputs.seed || github.run_id }}
+  DATABASES: ${{ inputs.databases || '4' }}
+  CAMUS_REST: http://localhost:5095
+  CAMUS_GRPC: http://localhost:5096
+  WORK: ${{ github.workspace }}/work
+
+jobs:
+  fuzz:
+    name: Build random databases and dump them
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      dumped: ${{ steps.snapshot.outcome == 'success' }}
+
+    steps:
+      - name: Check out camusdb-dump
+        uses: actions/checkout@v4
+        with:
+          path: camusdb-dump
+
+      # The fuzzer depends on the driver through a relative path (file:../../camusdb-ts).
+      - name: Check out camusdb-ts
+        uses: actions/checkout@v4
+        with:
+          repository: camusdb/camusdb-ts
+          ref: ${{ env.DRIVER_REF }}
+          path: camusdb-ts
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Start CamusDB
+        run: docker run --detach --name camusdb --network host "$CAMUS_IMAGE"
+
+      - name: Build the driver
+        working-directory: camusdb-ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the fuzzer
+        working-directory: camusdb-dump/fuzz
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build camus-dump
+        run: dotnet build camusdb-dump/CamusDB.Dump/CamusDB.Dump.csproj --configuration Release
+
+      - name: Wait for CamusDB
+        working-directory: camusdb-dump/fuzz
+        run: node dist/cli.js wait --rest "$CAMUS_REST" --grpc "$CAMUS_GRPC" --timeout 180
+
+      - name: Build random databases
+        working-directory: camusdb-dump/fuzz
+        run: |
+          echo "Seed: $SEED (replay it with the workflow_dispatch input 'seed')"
+          node dist/cli.js generate --seed "$SEED" --databases "$DATABASES" \
+            --rest "$CAMUS_REST" --grpc "$CAMUS_GRPC" --out "$WORK"
+
+      - name: Dump them
+        env:
+          CAMUS_DUMP: dotnet ${{ github.workspace }}/camusdb-dump/CamusDB.Dump/bin/Release/net10.0/CamusDB.Dump.dll
+        run: camusdb-dump/fuzz/scripts/dump.sh "$WORK/generate-report.json" "$SEED" "$WORK/dumps"
+
+      # Taken after the dumps: the probe inside it writes rows, and the snapshot reads first.
+      - name: Record the source
+        id: snapshot
+        working-directory: camusdb-dump/fuzz
+        run: |
+          node dist/cli.js snapshot --label source --probe \
+            --rest "$CAMUS_REST" --grpc "$CAMUS_GRPC" --out "$WORK/source.json"
+
+      - name: Upload the databases and the dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ github.run_id }}
+          path: work/
+          if-no-files-found: ignore
+
+      # A refused DDL statement is reported but does not fail the run: the generator drops what the
+      # server refused, and the dump is still tested on everything else.
+      - name: Check the driver
+        working-directory: camusdb-dump/fuzz
+        run: |
+          status=0
+          node dist/cli.js findings --allow ddl-refused \
+            --file "$WORK/generate-report.json" --file "$WORK/source.json" > "$WORK/driver-checks.txt" || status=$?
+          cat "$WORK/driver-checks.txt"
+          {
+            echo "## Driver checks (seed $SEED)"
+            echo '```text'
+            cat "$WORK/driver-checks.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Server logs
+        if: failure()
+        run: docker logs camusdb 2>&1 | tail -300
+
+  verify:
+    name: Verify the ${{ matrix.mode }} dump
+    needs: fuzz
+    # The dumps are worth checking even when the driver checks failed.
+    if: always() && needs.fuzz.outputs.dumped == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [per-database, all-databases]
+
+    steps:
+      - name: Check out camusdb-dump
+        uses: actions/checkout@v4
+        with:
+          path: camusdb-dump
+
+      - name: Check out camusdb-ts
+        uses: actions/checkout@v4
+        with:
+          repository: camusdb/camusdb-ts
+          ref: ${{ env.DRIVER_REF }}
+          path: camusdb-ts
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Start an empty CamusDB
+        run: docker run --detach --name camusdb --network host "$CAMUS_IMAGE"
+
+      - name: Install camus-cli
+        run: dotnet tool install --global CamusDB.SqlSh
+
+      - name: Build the driver
+        working-directory: camusdb-ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the fuzzer
+        working-directory: camusdb-dump/fuzz
+        run: |
+          npm ci
+          npm run build
+
+      - name: Download the dumps
+        uses: actions/download-artifact@v4
+        with:
+          name: fuzz-${{ github.run_id }}
+          path: work/
+
+      - name: Wait for CamusDB
+        working-directory: camusdb-dump/fuzz
+        run: node dist/cli.js wait --rest "$CAMUS_REST" --grpc "$CAMUS_GRPC" --timeout 180
+
+      - name: Restore
+        env:
+          RESTORE_ENDPOINT: ${{ env.CAMUS_GRPC }}
+        run: |
+          if [[ "${{ matrix.mode }}" == per-database ]]; then
+            files=("$WORK"/dumps/per-database/*)
+          else
+            files=("$WORK"/dumps/all-databases.*)
+          fi
+          camusdb-dump/fuzz/scripts/restore.sh "${files[@]}" > "$WORK/restore-${{ matrix.mode }}.log" 2>&1 || {
+            echo "The restore failed. The last lines camus-cli wrote:"
+            grep -v 'Query OK' "$WORK/restore-${{ matrix.mode }}.log" | tail -40
+            exit 1
+          }
+
+      - name: Record the restore
+        working-directory: camusdb-dump/fuzz
+        run: |
+          node dist/cli.js snapshot --label "${{ matrix.mode }}" --probe \
+            --rest "$CAMUS_REST" --grpc "$CAMUS_GRPC" --out "$WORK/restored-${{ matrix.mode }}.json"
+
+      - name: Compare with the source
+        working-directory: camusdb-dump/fuzz
+        run: |
+          status=0
+          node dist/cli.js compare --title "${{ matrix.mode }} dump (seed $SEED)" \
+            --expected "$WORK/source.json" --actual "$WORK/restored-${{ matrix.mode }}.json" \
+            --report "$WORK/report-${{ matrix.mode }}.txt" || status=$?
+          {
+            echo "## ${{ matrix.mode }} dump"
+            echo "Options: \`$(grep "^${{ matrix.mode }}:" "$WORK/dumps/dump-plan.txt" | cut -d: -f2-)\`"
+            echo '```text'
+            cat "$WORK/report-${{ matrix.mode }}.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-${{ matrix.mode }}-${{ github.run_id }}
+          path: |
+            work/restore-${{ matrix.mode }}.log
+            work/restored-${{ matrix.mode }}.json
+            work/report-${{ matrix.mode }}.txt
+          if-no-files-found: ignore
+
+      - name: Server logs
+        if: failure()
+        run: docker logs camusdb 2>&1 | tail -300

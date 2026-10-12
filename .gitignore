@@ -7,3 +7,5 @@ CamusDB.Dump/nupkg/
 .claude/settings.local.json
 .serena/
 .idea/
+fuzz/node_modules/
+fuzz/dist/
