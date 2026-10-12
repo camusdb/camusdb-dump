@@ -69,7 +69,7 @@ internal static class SqlLiteral
                 return "'" + Utc(value.LongValue).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + "'";
 
             case ColumnType.DateTime:
-                return RenderDateTime(value.LongValue, table, column, warnings);
+                return RenderDateTime(value.LongValue);
 
             case ColumnType.Uuid:
                 return "'" + value.AsGuid().ToString("D", CultureInfo.InvariantCulture) + "'";
@@ -223,15 +223,14 @@ internal static class SqlLiteral
     }
 
     /// <summary>
-    /// A datetime literal carries at most milliseconds, while the column stores 100-nanosecond ticks, so
-    /// a finer-grained value is reported as truncated rather than passed off as a faithful dump.
+    /// A datetime literal carries the full 100-nanosecond precision the column stores. A value on a whole
+    /// millisecond keeps the shorter three-digit form, so most dumps read as they always did.
     /// </summary>
-    private static string RenderDateTime(long ticks, string table, string column, DumpWarnings warnings)
+    private static string RenderDateTime(long ticks)
     {
-        if (ticks % TimeSpan.TicksPerMillisecond != 0)
-            warnings.Truncated(table, column, "datetime values are truncated to milliseconds — CamusDB literals carry no finer precision");
+        string format = ticks % TimeSpan.TicksPerMillisecond == 0 ? "yyyy-MM-ddTHH:mm:ss.fffZ" : "yyyy-MM-ddTHH:mm:ss.fffffffZ";
 
-        return "'" + Utc(ticks).ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture) + "'";
+        return "'" + Utc(ticks).ToString(format, CultureInfo.InvariantCulture) + "'";
     }
 
     private static DateTime Utc(long ticks) => new(ticks, DateTimeKind.Utc);

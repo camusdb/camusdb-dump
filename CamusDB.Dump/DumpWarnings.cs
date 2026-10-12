@@ -57,11 +57,6 @@ public sealed class DumpWarnings
     /// </summary>
     public void Note(string key, string message) => notes[key] = message;
 
-    public void Truncated(string table, string column, string reason)
-    {
-        Record($"truncated|{table}|{column}", $"{table}.{column}: {reason}.");
-    }
-
     private void Record(string key, string message)
     {
         issues[key] = issues.TryGetValue(key, out (string Message, long Count) existing)

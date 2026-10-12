@@ -79,8 +79,11 @@ internal sealed partial class Dumper
 
         progress.TablesResolved(tables.Count);
 
+        List<SequenceInfo> sequences = await ReadSequencesAsync(tables, definitions, cancellationToken).ConfigureAwait(false);
+        List<SequenceInfo> freeStanding = sequences.Where(s => s.OwnedBy is null).ToList();
+
         if (!opts.NoHeader)
-            WriteHeader(endpoint, protocol, tables);
+            WriteHeader(endpoint, protocol, tables, sequences);
 
         // With --all-databases the pair is not optional: each section has to create its database and then
         // point the client at it, or everything that follows would land in whichever database the client
@@ -98,8 +101,14 @@ internal sealed partial class Dumper
             for (int i = tables.Count - 1; i >= 0; i--)
                 output.WriteLine($"DROP TABLE IF EXISTS {SqlLiteral.Identifier(tables[i], "table")};");
 
+            // After the tables, whose column defaults may draw from them. An owned sequence goes with its table.
+            foreach (SequenceInfo sequence in freeStanding)
+                output.WriteLine(SequenceCatalog.DropStatement(sequence));
+
             output.WriteLine();
         }
+
+        WriteFreeStandingSequences(freeStanding);
 
         foreach (string table in tables)
         {
@@ -109,8 +118,15 @@ internal sealed partial class Dumper
                 ? []
                 : await DumpIndexesAsync(table, cancellationToken).ConfigureAwait(false);
 
+            List<SequenceInfo> owned = sequences
+                .Where(s => string.Equals(s.OwnerTable, table, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
             if (!opts.NoCreateTable)
+            {
                 WriteTableDefinitions(definitions[table]);
+                WriteStatements(owned.SelectMany(SequenceCatalog.OwnedStatements));
+            }
 
             if (!opts.DeferIndexes)
                 WriteIndexes(indexStatements);
@@ -121,11 +137,17 @@ internal sealed partial class Dumper
                     .Where(r => string.Equals(r.ParentTable, table, StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
-                await DumpTableDataAsync(table, selfReferences, cancellationToken).ConfigureAwait(false);
+                bool overrideIdentity = definitions.TryGetValue(table, out List<string>? ddls)
+                    && ddls.Any(ddl => GeneratedAlwaysIdentity().IsMatch(ddl));
+
+                await DumpTableDataAsync(table, selfReferences, overrideIdentity, cancellationToken).ConfigureAwait(false);
             }
 
             if (opts.DeferIndexes)
                 WriteIndexes(indexStatements);
+
+            if (!opts.NoData)
+                WriteStatements(owned.Select(SequenceCatalog.PositionStatement).OfType<string>());
 
             progress.TableCompleted();
         }
@@ -147,13 +169,80 @@ internal sealed partial class Dumper
         return database;
     }
 
-    private void WriteHeader(string endpoint, string protocol, List<string> tables)
+    /// <summary>
+    /// The sequences the dump restores (see <see cref="SequenceCatalog"/>). A server without sequences
+    /// has nothing to restore, and the dump says so once.
+    /// </summary>
+    private async Task<List<SequenceInfo>> ReadSequencesAsync(
+        List<string> tables, Dictionary<string, List<string>> definitions, CancellationToken cancellationToken)
+    {
+        if (opts.NoCreateTable && opts.NoData)
+            return [];
+
+        List<SequenceInfo>? all = await SequenceCatalog.ReadAsync(CreateCommand, cancellationToken).ConfigureAwait(false);
+
+        if (all is null)
+        {
+            warnings.Note(
+                "sequences-unsupported",
+                "this server does not answer SHOW SEQUENCES, so the dump carries no sequences.");
+            return [];
+        }
+
+        bool filtered = opts.Tables.Any(t => t.Trim().Length > 0) || opts.ExcludeTables.Any(t => t.Trim().Length > 0);
+
+        return SequenceCatalog.Select(all, tables, definitions, filtered);
+    }
+
+    /// <summary>
+    /// Creates the free-standing sequences, before the first table: a column default can draw from one,
+    /// and CREATE TABLE refuses a default that names a sequence that does not exist yet.
+    /// </summary>
+    private void WriteFreeStandingSequences(List<SequenceInfo> sequences)
+    {
+        List<string> statements = [];
+
+        foreach (SequenceInfo sequence in sequences)
+        {
+            if (!opts.NoCreateTable)
+            {
+                statements.Add(SequenceCatalog.CreateStatement(sequence, opts.IfNotExists));
+
+                if (SequenceCatalog.CommentStatement(sequence) is string comment)
+                    statements.Add(comment);
+            }
+
+            if (!opts.NoData && SequenceCatalog.PositionStatement(sequence) is string position)
+                statements.Add(position);
+        }
+
+        WriteStatements(statements);
+    }
+
+    private void WriteStatements(IEnumerable<string> statements)
+    {
+        bool any = false;
+
+        foreach (string statement in statements)
+        {
+            output.WriteLine(statement);
+            any = true;
+        }
+
+        if (any)
+            output.WriteLine();
+    }
+
+    private void WriteHeader(string endpoint, string protocol, List<string> tables, List<SequenceInfo> sequences)
     {
         string version = typeof(Dumper).Assembly.GetName().Version?.ToString(3) ?? "";
 
         output.WriteLine($"-- camus-dump {version}");
         output.WriteLine($"-- Host: {endpoint}    Database: {database}    Protocol: {protocol}");
         output.WriteLine($"-- Tables: {(tables.Count == 0 ? "(none)" : string.Join(", ", tables))}");
+
+        if (sequences.Count > 0)
+            output.WriteLine($"-- Sequences: {string.Join(", ", sequences.Select(s => s.Name))} (positions are current, not as of the point in time)");
 
         if (opts.AllDatabases)
             output.WriteLine($"-- One section of an --all-databases dump. The USE below switches to {database}; a client that does not read USE has to connect to it directly.");
@@ -363,11 +452,20 @@ internal sealed partial class Dumper
         using CamusCommand cmd = CreateCommand("SHOW INDEXES FROM " + SqlLiteral.Identifier(table, "table"));
         using CamusDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-        List<string> statements = [];
+        List<(string Name, string Create, string? Comment)> indexes = [];
+
+        // A server that tells an unset comment (NULL) from an empty one ('') reports NULL for the primary
+        // key, which cannot carry a comment. An older server reports '' for both. There an empty comment
+        // cannot be told from none, so it is left out, as before.
+        bool emptyIsAComment = false;
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             string name = reader.GetString(reader.GetOrdinal("Key_name"));
+            string? comment = NullableString(reader, "Comment");
+
+            if (comment is null)
+                emptyIsAComment = true;
 
             // The primary index is internal ("~pk") and is not a legal identifier to re-create.
             if (name.StartsWith('~'))
@@ -398,14 +496,19 @@ internal sealed partial class Dumper
             if (include.Length > 0)
                 sb.Append(" INCLUDE (").Append(include).Append(')');
 
-            statements.Add(sb.Append(';').ToString());
+            indexes.Add((name, sb.Append(';').ToString(), comment));
+        }
+
+        List<string> statements = [];
+
+        foreach ((string name, string create, string? comment) in indexes)
+        {
+            statements.Add(create);
 
             // CREATE INDEX has no inline COMMENT clause, so a commented index needs a second
             // statement. It is emitted next to its index rather than collected separately, so the
             // two move together when --defer-indexes relocates the index build after the rows.
-            string comment = OptionalString(reader, "Comment");
-
-            if (comment.Length > 0)
+            if (comment is not null && (comment.Length > 0 || emptyIsAComment))
             {
                 statements.Add(
                     "COMMENT ON INDEX "
@@ -478,6 +581,23 @@ internal sealed partial class Dumper
         return "";
     }
 
+    /// <summary>
+    /// Like <see cref="OptionalString"/>, but keeps a NULL apart from an empty string. Null also when
+    /// the server does not send the field.
+    /// </summary>
+    private static string? NullableString(CamusDataReader reader, string field)
+    {
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            if (!string.Equals(reader.GetName(i), field, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return reader.IsDBNull(i) ? null : reader.GetString(i);
+        }
+
+        return null;
+    }
+
     private void WriteIndexes(List<string> statements)
     {
         if (statements.Count == 0)
@@ -516,7 +636,7 @@ internal sealed partial class Dumper
     /// <see cref="ForeignKeyOrder.OrderRows"/>), so it is held in memory as a whole. Every other table
     /// is streamed.</para>
     /// </summary>
-    private async Task DumpTableDataAsync(string table, List<ForeignKeyReference> selfReferences, CancellationToken cancellationToken)
+    private async Task DumpTableDataAsync(string table, List<ForeignKeyReference> selfReferences, bool overrideIdentity, CancellationToken cancellationToken)
     {
         string sql = "SELECT * FROM " + SqlLiteral.Identifier(table, "table");
 
@@ -555,7 +675,7 @@ internal sealed partial class Dumper
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                insertPrefix ??= BuildInsertPrefix(reader, table);
+                insertPrefix ??= BuildInsertPrefix(reader, table, overrideIdentity);
 
                 batchRows.Add(string.Join(", ", RenderRow(reader, table)));
 
@@ -570,7 +690,7 @@ internal sealed partial class Dumper
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                insertPrefix ??= BuildInsertPrefix(reader, table);
+                insertPrefix ??= BuildInsertPrefix(reader, table, overrideIdentity);
                 keys ??= ResolveSelfReferenceKeys(reader, table, selfReferences);
 
                 rows.Add(RenderRow(reader, table));
@@ -665,15 +785,25 @@ internal sealed partial class Dumper
         }
     }
 
-    private static string BuildInsertPrefix(CamusDataReader reader, string table)
+    /// <summary>
+    /// The head of every INSERT for a table. A table with a <c>GENERATED ALWAYS AS IDENTITY</c> column
+    /// refuses a supplied value for it, and the dump supplies every value, so its INSERTs say
+    /// <c>OVERRIDING SYSTEM VALUE</c>, as pg_dump does. The restored rows keep their identity values.
+    /// </summary>
+    private static string BuildInsertPrefix(CamusDataReader reader, string table, bool overrideIdentity)
     {
         string[] fields = new string[reader.FieldCount];
 
         for (int i = 0; i < reader.FieldCount; i++)
             fields[i] = SqlLiteral.Identifier(reader.GetName(i), "column");
 
-        return $"INSERT INTO {SqlLiteral.Identifier(table, "table")} ({string.Join(", ", fields)}) VALUES\n  ";
+        string overriding = overrideIdentity ? "OVERRIDING SYSTEM VALUE " : "";
+
+        return $"INSERT INTO {SqlLiteral.Identifier(table, "table")} ({string.Join(", ", fields)}) {overriding}VALUES\n  ";
     }
+
+    [GeneratedRegex(@"\bGENERATED\s+ALWAYS\s+AS\s+IDENTITY\b", RegexOptions.IgnoreCase)]
+    private static partial Regex GeneratedAlwaysIdentity();
 
     /// <summary>
     /// Matches the head of a <c>CREATE TABLE</c> statement and captures the table it declares. The name

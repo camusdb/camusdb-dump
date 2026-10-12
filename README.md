@@ -249,7 +249,24 @@ One thing has no CamusDB SQL literal, and `camus-dump` reports it rather than em
 
 - **Non-finite floats** — `NaN`, `+Infinity`, `-Infinity`. CamusDB's float literal has no form for them. The value is dumped as `NULL`.
 
-It is counted and printed to standard error at the end of the run, and repeated as `-- WARNING` lines in the dump itself; `--strict` turns it into a failure instead. `DATETIME` values are truncated to milliseconds, the finest precision a CamusDB literal carries, and a dump that truncates one says so the same way.
+It is counted and printed to standard error at the end of the run, and repeated as `-- WARNING` lines in the dump itself; `--strict` turns it into a failure instead. `DATETIME` values keep their full precision of 100 nanoseconds: a value below a whole millisecond is written with seven fractional digits.
+
+### Sequences
+
+The dump restores every sequence, and the position it has reached:
+
+- **A free-standing sequence** (`CREATE SEQUENCE`) is created before the first table, with every option spelled out, because a column default can draw from it. Its comment follows.
+- **A sequence owned by an identity or `serial` column** is created by that column's `CREATE TABLE`. After the table, the dump renames it when the source used another name, restores options that differ from an identity's, and restores its comment.
+- **The position** is restored with `SELECT setval('name', n)` after the rows, where `n` is the `reserved_upto` that `SHOW SEQUENCES` reports. A row restored with an explicit value does not advance a sequence, so without this a restored sequence would hand out values that restored rows already hold. A sequence nothing has been drawn from has no position to restore.
+
+Notes:
+
+- **Positions are current.** `SHOW SEQUENCES` has no time-travel form, so the position is read when the dump starts, not as of `--as-of`. It is never below the position at that instant, so a restored sequence never reissues a value a dumped row holds.
+- **A `setval` takes about five seconds on the server.** A dump with many drawn sequences takes that much longer to restore.
+- **With `--table` or `--exclude-table`**, the dump carries the sequences the dumped tables own and the free-standing sequences their column defaults draw from.
+- `--no-create-table` leaves out the `CREATE SEQUENCE` statements, `--no-data` the positions, `--if-not-exists` adds `IF NOT EXISTS`, and `--add-drop-table` drops the free-standing sequences after the tables.
+- **`GENERATED ALWAYS AS IDENTITY`** refuses a supplied value, and the dump supplies every value, so the `INSERT` statements of such a table say `OVERRIDING SYSTEM VALUE`, as pg_dump's do. The restored rows keep their identity values.
+- A column default that draws from a sequence, and an identity column, reach the dump only through `SHOW CREATE TABLE`. A server older than the release that renders them there loses both, and the restored column has no default.
 
 ### Foreign keys
 
