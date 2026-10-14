@@ -60,6 +60,9 @@ internal static class UserDumper
     {
         "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE TABLE", "DROP", "ALTER", "INDEX", "CREATE",
         "ALL PRIVILEGES",
+        // Server-level: reads the node's own disk, CPU and memory. Granted on *.* only, and reported
+        // after ALL PRIVILEGES because ALL does not include it ("ALL PRIVILEGES, MONITOR").
+        "MONITOR",
     };
 
     /// <summary>How many times <c>--all-users</c> reads the catalog before it gives up on a stable view.</summary>
