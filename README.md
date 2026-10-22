@@ -1,6 +1,6 @@
 # CamusDB Dump
 
-`camus-dump` makes logical backups of a [CamusDB](https://github.com/camusdb/camusdb) database. It writes a SQL script that recreates the schemas, indexes, sequences and rows, and that any CamusDB SQL client can replay.
+`camus-dump` makes logical backups of a [CamusDB](https://github.com/camusdb/camusdb) database. It writes a SQL script that recreates the installed C# extensions, schemas, indexes, sequences and rows, and that any CamusDB SQL client can replay.
 
 - **Consistent by default.** Every table is read at the same instant, so the dump never mixes data from different moments.
 - **Restores in one pass.** Tables and rows are ordered so foreign keys hold, and sequences resume where they left off.
@@ -89,7 +89,7 @@ Credentials are refused over plain `http://` to anything other than localhost. U
 | `-w`, `--where` | Dump only rows that match this SQL condition. It is passed as written, so never build it from untrusted input. |
 | `--all-users` | Also export every account and grant. Needs a superuser. |
 | `--users` | Also export these accounts and their grants. Works with older servers. |
-| `--no-create-table` | Leave out `CREATE TABLE` and `CREATE SEQUENCE`. |
+| `--no-create-table` | Leave out `CREATE EXTENSION`, `CREATE TABLE` and `CREATE SEQUENCE`. |
 | `--no-data` | Leave out the rows. |
 | `--no-indexes` | Leave out the separate `CREATE INDEX` statements. |
 

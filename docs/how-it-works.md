@@ -177,6 +177,17 @@ Notes:
 - **`GENERATED ALWAYS AS IDENTITY`** refuses a supplied value, and the dump supplies every value, so the `INSERT` statements of such a table say `OVERRIDING SYSTEM VALUE`, as pg_dump's do. The restored rows keep their identity values.
 - A column default that draws from a sequence, and an identity column, reach the dump only through `SHOW CREATE TABLE`. A server older than the release that renders them there loses both, and the restored column has no default.
 
+## C# extensions
+
+The dump installs the C# extensions of the database with `CREATE EXTENSION name VERSION 'v'`, before the sequences and the first table, because a column default, a CHECK constraint or a trigger can use one. An extension is written after the extensions it requires. The dump never carries the extension's code: deploy the same extension files on the target server and list them in its configuration before you load the dump. A server that does not load the named version refuses the statement.
+
+Notes:
+
+- The list comes from `SHOW EXTENSIONS`, which needs a superuser. For any other user the dump carries no extensions and warns once.
+- `--no-create-table` leaves out the `CREATE EXTENSION` statements, and `--add-drop-table` drops the extensions with `DROP EXTENSION IF EXISTS` after the tables and sequences, each one before the extensions it requires. A view or a trigger on the target that uses an extension makes that drop fail. A target server older than the `IF EXISTS` form refuses the drop as a syntax error.
+- A server older than C# extensions answers `SHOW EXTENSIONS` with an error. The dump then carries no extensions and does not warn, because that server cannot have any.
+- Triggers are not in the dump. Recreate them after the rows are loaded.
+
 ## Foreign keys
 
 The server checks a foreign key when the statement that writes a row ends. A table that references another table can only be created after that table exists, and its rows can only be inserted after the rows they reference. So camus-dump writes the dump in that order:

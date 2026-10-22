@@ -81,9 +81,10 @@ internal sealed partial class Dumper
 
         List<SequenceInfo> sequences = await ReadSequencesAsync(tables, definitions, cancellationToken).ConfigureAwait(false);
         List<SequenceInfo> freeStanding = sequences.Where(s => s.OwnedBy is null).ToList();
+        List<ExtensionInfo> extensions = await ReadExtensionsAsync(cancellationToken).ConfigureAwait(false);
 
         if (!opts.NoHeader)
-            WriteHeader(endpoint, protocol, tables, sequences);
+            WriteHeader(endpoint, protocol, tables, sequences, extensions);
 
         // With --all-databases the pair is not optional: each section has to create its database and then
         // point the client at it, or everything that follows would land in whichever database the client
@@ -105,8 +106,20 @@ internal sealed partial class Dumper
             foreach (SequenceInfo sequence in freeStanding)
                 output.WriteLine(SequenceCatalog.DropStatement(sequence));
 
+            // Last, and each one before the extensions it requires: the server refuses to drop an extension
+            // that a table, another extension, a view or a trigger still uses. Views and triggers are not in
+            // the dump, so one on the target that uses an extension stops the load here, by name. IF EXISTS
+            // keeps a target that never installed the extension loadable.
+            for (int i = extensions.Count - 1; i >= 0; i--)
+                output.WriteLine(ExtensionCatalog.DropStatement(extensions[i]));
+
             output.WriteLine();
         }
+
+        // Before the sequences and the tables: a column default, a CHECK constraint or a trigger can use
+        // an extension, and the server resolves the name when the table is created.
+        if (!opts.NoCreateTable)
+            WriteStatements(extensions.Select(ExtensionCatalog.CreateStatement));
 
         WriteFreeStandingSequences(freeStanding);
 
@@ -195,6 +208,30 @@ internal sealed partial class Dumper
     }
 
     /// <summary>
+    /// The C# extensions the dump installs (see <see cref="ExtensionCatalog"/>). Read only when the dump
+    /// writes table definitions, since only those can depend on an extension. A user who may not read
+    /// <c>SHOW EXTENSIONS</c> gets a dump without extensions, and the dump says so once.
+    /// </summary>
+    private async Task<List<ExtensionInfo>> ReadExtensionsAsync(CancellationToken cancellationToken)
+    {
+        if (opts.NoCreateTable)
+            return [];
+
+        List<ExtensionInfo>? extensions = await ExtensionCatalog.ReadAsync(CreateCommand, cancellationToken).ConfigureAwait(false);
+
+        if (extensions is null)
+        {
+            warnings.Note(
+                "extensions-unreadable",
+                "SHOW EXTENSIONS was refused (it requires a superuser), so the dump installs no C# extensions; " +
+                "run CREATE EXTENSION for each one on the target before loading the dump.");
+            return [];
+        }
+
+        return extensions;
+    }
+
+    /// <summary>
     /// Creates the free-standing sequences, before the first table: a column default can draw from one,
     /// and CREATE TABLE refuses a default that names a sequence that does not exist yet.
     /// </summary>
@@ -233,7 +270,7 @@ internal sealed partial class Dumper
             output.WriteLine();
     }
 
-    private void WriteHeader(string endpoint, string protocol, List<string> tables, List<SequenceInfo> sequences)
+    private void WriteHeader(string endpoint, string protocol, List<string> tables, List<SequenceInfo> sequences, List<ExtensionInfo> extensions)
     {
         string version = typeof(Dumper).Assembly.GetName().Version?.ToString(3) ?? "";
 
@@ -243,6 +280,9 @@ internal sealed partial class Dumper
 
         if (sequences.Count > 0)
             output.WriteLine($"-- Sequences: {string.Join(", ", sequences.Select(s => s.Name))} (positions are current, not as of the point in time)");
+
+        if (extensions.Count > 0)
+            output.WriteLine($"-- Extensions: {string.Join(", ", extensions.Select(e => e.Name + " " + e.Version))} (the target server must load these builds)");
 
         if (opts.AllDatabases)
             output.WriteLine($"-- One section of an --all-databases dump. The USE below switches to {database}; a client that does not read USE has to connect to it directly.");
