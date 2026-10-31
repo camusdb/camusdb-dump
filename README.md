@@ -4,7 +4,7 @@
 
 - **Consistent by default.** Every table is read at the same instant, so the dump never mixes data from different moments.
 - **Restores in one pass.** Tables and rows are ordered so foreign keys hold, and sequences resume where they left off.
-- **Exact values.** Every CamusDB type round-trips, including full-precision floats, `NUMERIC`, `BYTES` and sub-millisecond `DATETIME`.
+- **Exact values.** Every CamusDB type round-trips, including full-precision floats, `NUMERIC`, `BYTES`, `JSONB` and sub-millisecond `DATETIME`.
 - **Whole servers.** Dump every database, plus user accounts and grants, in one run.
 
 ## Installation

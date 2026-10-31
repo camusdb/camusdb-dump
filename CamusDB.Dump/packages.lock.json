@@ -4,9 +4,9 @@
     "net10.0": {
       "CamusDB.Client": {
         "type": "Direct",
-        "requested": "[0.16.2, )",
-        "resolved": "0.16.2",
-        "contentHash": "vYXT7aUni7AxpUAnIPetP61+SrHoINH8mig1nl6epG9Qz3IW/PXJi/Oi8yGr7QPStByPLCqDHQafX/Tb3Jq55A==",
+        "requested": "[0.17.1, )",
+        "resolved": "0.17.1",
+        "contentHash": "uSvCh8+nYHyawjY1BvjHJRB4vHxBd08yaqzi8WKzOm3tkwjYurTOB360OwC4pLj33vFg07R53CxZAb77xC8Edg==",
         "dependencies": {
           "Flurl": "4.0.0",
           "Flurl.Http": "4.0.2",

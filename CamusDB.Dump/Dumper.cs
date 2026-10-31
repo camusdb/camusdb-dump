@@ -37,6 +37,14 @@ internal sealed partial class Dumper
     // failed statement for the whole dump rather than one per table.
     private bool serverRendersIndexFreeDdl = true;
 
+    // In the default REST row form, JSON null and SQL NULL are the same token, so a jsonb document that
+    // is only JSON null reads as SQL NULL. A server and driver that support jsonbAsText keep the two
+    // apart, as gRPC always does. True only when this dump reads over REST and the probe in RunAsync
+    // found the loss. See NoteJsonbNullOverRest.
+    private readonly bool overRest;
+
+    private bool restLosesJsonNull;
+
     /// <summary>The instant the rows are read at, or null when the dump reads the latest data.</summary>
     private readonly PointInTime? pointInTime;
 
@@ -50,6 +58,7 @@ internal sealed partial class Dumper
         this.output = output;
         this.warnings = warnings;
         this.progress = progress;
+        this.overRest = ConnectionFactory.Describe(opts, database).Protocol == "rest";
     }
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -57,6 +66,9 @@ internal sealed partial class Dumper
         (string endpoint, _, string protocol) = ConnectionFactory.Describe(opts, database);
 
         List<string> tables = await ResolveTablesAsync(cancellationToken).ConfigureAwait(false);
+
+        if (overRest && !opts.NoData)
+            restLosesJsonNull = await ProbeRestLosesJsonNullAsync(cancellationToken).ConfigureAwait(false);
 
         Dictionary<string, List<string>> definitions = new(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, List<ForeignKeyReference>> references = new(StringComparer.OrdinalIgnoreCase);
@@ -511,6 +523,16 @@ internal sealed partial class Dumper
             if (name.StartsWith('~'))
                 continue;
 
+            if (string.Equals(OptionalString(reader, "Index_type"), "GIN", StringComparison.OrdinalIgnoreCase))
+            {
+                string ginColumns = ColumnList(reader, "Columns");
+
+                if (ginColumns.Length > 0)
+                    indexes.Add((name, CreateGinIndex(table, name, ginColumns), comment));
+
+                continue;
+            }
+
             bool unique = reader.GetString(reader.GetOrdinal("Non_unique")) == "0";
             string columns = IndexKeyColumnList(reader);
             string include = ColumnList(reader, "Include");
@@ -559,6 +581,23 @@ internal sealed partial class Dumper
 
         return statements;
     }
+
+    /// <summary>
+    /// The statement for a GIN index over a <c>jsonb</c> column.
+    ///
+    /// <para><c>SHOW INDEXES</c> reports such an index with <c>Index_type</c> <c>GIN</c>. A plain
+    /// <c>CREATE INDEX</c> would ask for an ordered index, which the server refuses on a <c>jsonb</c>
+    /// column, so the method has to be named. A GIN index has one column, no direction, no
+    /// <c>INCLUDE</c> columns and no unique form. The operator class is left out: the server builds
+    /// the same index for <c>jsonb_ops</c> and <c>jsonb_path_ops</c> and does not keep the name.</para>
+    ///
+    /// <para>A server older than <c>jsonb</c> sends no <c>Index_type</c> field, and has no GIN index to
+    /// report.</para>
+    /// </summary>
+    private static string CreateGinIndex(string table, string name, string columns)
+        => "CREATE INDEX IF NOT EXISTS " + SqlLiteral.Identifier(name, "index")
+           + " ON " + SqlLiteral.Identifier(table, "table")
+           + " USING GIN (" + columns + ");";
 
     /// <summary>
     /// The index's key columns, each quoted and carrying its sort direction.
@@ -772,9 +811,60 @@ internal sealed partial class Dumper
         string[] row = new string[reader.FieldCount];
 
         for (int i = 0; i < reader.FieldCount; i++)
-            row[i] = SqlLiteral.Render(reader.GetColumnValue(i), table, reader.GetName(i), warnings);
+        {
+            ColumnValue value = reader.GetColumnValue(i);
+
+            if (restLosesJsonNull && value.Type == ColumnType.Null)
+                NoteJsonbNullOverRest(reader, i, table);
+
+            row[i] = SqlLiteral.Render(value, table, reader.GetName(i), warnings);
+        }
 
         return row;
+    }
+
+    /// <summary>
+    /// Reads the document JSON <c>null</c> over this connection, and returns true when it arrives as SQL
+    /// <c>NULL</c>. That is the default REST row form, with a server or a driver older than
+    /// <c>jsonbAsText</c>. The probe tests the real path, so it gives the right answer for any pair of
+    /// versions. A server without <c>jsonb</c> refuses the statement; it then has no jsonb column to
+    /// lose a value from.
+    /// </summary>
+    private async Task<bool> ProbeRestLosesJsonNullAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using CamusCommand probe = CreateCommand("SELECT JSONB 'null' AS j");
+            using CamusDataReader reader = await probe.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) && reader.IsDBNull(0);
+        }
+        catch (CamusException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Records that a SQL <c>NULL</c> in a <c>jsonb</c> column, read over REST, can be a lost JSON
+    /// <c>null</c>. It is called only when <see cref="ProbeRestLosesJsonNullAsync"/> found the loss: the
+    /// default REST row writes the document <c>null</c> and SQL <c>NULL</c> as the same token, so the
+    /// driver cannot tell them apart, and the dump writes <c>NULL</c> for both. A <c>null</c> inside
+    /// a larger document is not affected. The note names the column once, whatever the number of rows.
+    /// </summary>
+    private void NoteJsonbNullOverRest(CamusDataReader reader, int ordinal, string table)
+    {
+        if (reader.GetDataTypeName(ordinal) != nameof(ColumnType.Jsonb))
+            return;
+
+        string column = reader.GetName(ordinal);
+
+        warnings.Note(
+            $"jsonb-null-over-rest|{table}|{column}",
+            $"{table}.{column}: the jsonb column has SQL NULL values, and over REST this server and driver "
+            + "read a document that is only JSON null as SQL NULL too. Such a document is dumped as NULL. "
+            + "Dump over gRPC (--protocol grpc, the default), or use a server and camus-dump that support "
+            + "jsonbAsText, to keep JSON null.");
     }
 
     /// <summary>

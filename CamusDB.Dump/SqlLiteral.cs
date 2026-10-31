@@ -18,7 +18,8 @@ namespace CamusDB.Dump;
 /// <para>Every type CamusDB stores has a literal form. Numbers and booleans are written directly;
 /// <c>date</c>, <c>datetime</c> and <c>uuid</c> ride in as string literals the server coerces on
 /// INSERT; <c>numeric</c> uses the typed literal <c>NUMERIC '…'</c>, so that no digit goes through a
-/// double; <c>bytes</c> uses <c>X'…'</c> and arrays use <c>ARRAY[…]</c>. The only values with no
+/// double; <c>jsonb</c> uses the typed literal <c>JSONB '…'</c>; <c>bytes</c> uses <c>X'…'</c> and
+/// arrays use <c>ARRAY[…]</c>. The only values with no
 /// literal at all are the non-finite floats (NaN, ±Infinity), which are reported through
 /// <see cref="DumpWarnings"/> rather than silently mangled.</para>
 ///
@@ -76,6 +77,16 @@ internal static class SqlLiteral
 
             case ColumnType.Array:
                 return RenderArray(value, table, column, warnings);
+
+            // The cell arrives as the PostgreSQL text form of the document. The typed literal makes the
+            // server parse it as a document in every position, not only in a jsonb column, and the text
+            // is canonical, so it parses back to the same stored document. A backslash in the text (a
+            // JSON escape such as \" or \n) selects the E'…' form through Quote, and JSONB E'…' parses
+            // because the escape form is an ordinary string token.
+            case ColumnType.Jsonb:
+                return value.StrValue is null
+                    ? "NULL"
+                    : "JSONB " + Quote(value.StrValue);
 
             default:
                 warnings.Unrepresentable(table, column, $"unknown column type {value.Type}");

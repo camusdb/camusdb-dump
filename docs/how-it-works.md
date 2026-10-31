@@ -142,7 +142,9 @@ A dump holds every row of the database, so `-o` and `--output-directory` create 
 
 ## Data types and indexes
 
-Every type CamusDB stores is dumped as a literal that parses back to the same value: `OID`, `STRING`, `INT64`, `FLOAT64`, `FLOAT32`, `NUMERIC` (as the exact typed literal `NUMERIC '…'`), `BOOL`, `BYTES` (as `X'…'`), `DATE`, `DATETIME`, `UUID`, `ARRAY` (as `ARRAY[…]`) and `NULL`.
+Every type CamusDB stores is dumped as a literal that parses back to the same value: `OID`, `STRING`, `INT64`, `FLOAT64`, `FLOAT32`, `NUMERIC` (as the exact typed literal `NUMERIC '…'`), `BOOL`, `BYTES` (as `X'…'`), `DATE`, `DATETIME`, `UUID`, `JSONB` (as the typed literal `JSONB '…'`), `ARRAY` (as `ARRAY[…]`) and `NULL`.
+
+A `JSONB` document is written in the text form the server gives it: canonical key order, every digit of each number, and a space after each `:` and `,`. That text parses back to the same stored document. A document that holds a JSON escape, such as `\"` or `\n`, has a backslash in its text, so it uses the `E'…'` form described below.
 
 Strings use CamusDB's two literal forms. The plain `'…'` form does no escape processing: a backslash is an ordinary character, and the only special sequence is a doubled quote. The `E'…'` escape form reads a backslash as an escape. A value goes into the escape form when it holds a control character, which the plain form cannot carry, **or a backslash**, and inside that form a backslash is always doubled and a quote is always written `''`, never `\'`.
 
@@ -152,13 +154,17 @@ The same rewrite is applied to the `CREATE TABLE` text the server reports, so a 
 
 Any string round-trips, including one holding a backslash, a trailing backslash, both quote characters, a newline, or a NUL.
 
-Indexes — unique, multi-column, and covering indexes with `INCLUDE` columns — are dumped both inline in `CREATE TABLE` and as separate `CREATE INDEX IF NOT EXISTS` statements, so a dump taken with `--no-create-table` still carries them, and `--defer-indexes` can build them after the rows have loaded. The `IF NOT EXISTS` makes the separate statements a no-op when the table definition already created the index.
+Indexes — unique, multi-column, covering indexes with `INCLUDE` columns, and GIN indexes on `JSONB` columns — are dumped both inline in `CREATE TABLE` and as separate `CREATE INDEX IF NOT EXISTS` statements, so a dump taken with `--no-create-table` still carries them, and `--defer-indexes` can build them after the rows have loaded. The `IF NOT EXISTS` makes the separate statements a no-op when the table definition already created the index. A GIN index is written as `CREATE INDEX IF NOT EXISTS … USING GIN (col)`, because a plain `CREATE INDEX` asks for an ordered index, and the server refuses an ordered index on a `JSONB` column.
 
 One thing has no CamusDB SQL literal, and `camus-dump` reports it rather than emitting something that would restore incorrectly:
 
 - **Non-finite floats** — `NaN`, `+Infinity`, `-Infinity`. CamusDB's float literal has no form for them. The value is dumped as `NULL`.
 
 It is counted and printed to standard error at the end of the run, and repeated as `-- WARNING` lines in the dump itself; `--strict` turns it into a failure instead. `DATETIME` values keep their full precision of 100 nanoseconds: a value below a whole millisecond is written with seven fractional digits.
+
+One `JSONB` value can be lost in a dump over REST (`--protocol rest`): a document that is only JSON `null`. In the default REST row form, JSON `null` and SQL `NULL` are the same token, so the driver reads that document as SQL `NULL`, and the dump writes `NULL`. A server and a driver that support the REST option `jsonbAsText` send each document as text, and keep the two values apart. camus-dump uses such a driver (CamusDB.Client 0.17.1 or later), so with a server that supports the option, a REST dump keeps JSON `null`. gRPC, the default protocol, always keeps them apart. A `null` inside a larger document is never affected.
+
+A REST dump checks this once, at the start: it reads `SELECT JSONB 'null'` and looks at the result. If the result is SQL `NULL`, the dump prints a warning for each `JSONB` column where it writes SQL `NULL`.
 
 ## Sequences
 
