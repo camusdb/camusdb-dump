@@ -1,6 +1,6 @@
 import type { Random } from './random.js';
 import type { ColType, ScalarKind, Value, ValueBounds } from './values.js';
-import { ARRAY_ELEMENT_KINDS, canonicalTypeSql, descendable, generateValue, indexable, literal, stringLiteral, typeSql } from './values.js';
+import { ARRAY_ELEMENT_KINDS, canonicalTypeSql, defaultLiteral, descendable, generateValue, indexable, stringLiteral, typeSql } from './values.js';
 
 export type ColumnDefault =
   | { readonly kind: 'const'; readonly value: Value }
@@ -33,6 +33,11 @@ export interface IndexDef {
   readonly comment?: string | undefined;
   /** Declared inside CREATE TABLE rather than with a separate CREATE INDEX. */
   readonly inline: boolean;
+  /**
+   * Set on a GIN index over one jsonb column: the spelling of its separate statement. Inline, a GIN
+   * index is always `INVERTED INDEX name (col)`.
+   */
+  readonly gin?: 'using-gin' | 'path-ops' | 'inverted' | undefined;
 }
 
 export interface ForeignKeyDef {
@@ -92,6 +97,7 @@ const KEYWORD_TABLES = ['order', 'key', 'value', 'table', 'select'];
 
 const SCALARS: readonly ScalarKind[] = [
   'int64', 'int64', 'float64', 'float32', 'numeric', 'bool', 'string', 'string', 'bytes', 'date', 'datetime', 'uuid', 'oid',
+  'jsonb',
 ];
 
 export interface SchemaOptions {
@@ -366,6 +372,22 @@ function generateIndexes(rng: Random, table: string, columns: readonly ColumnDef
     });
   }
 
+  // A GIN index has one jsonb column, no direction, no INCLUDE columns and no unique form.
+  const documents = columns.filter((c) => c.type.kind === 'jsonb' && !c.addedLater);
+  for (const [i, column] of documents.entries()) {
+    if (!rng.chance(0.5)) continue;
+
+    indexes.push({
+      name: `gin_${table.toLowerCase()}_${i}`,
+      unique: false,
+      columns: [{ name: column.name, desc: false }],
+      include: [],
+      comment: rng.chance(0.2) ? randomComment(rng) : undefined,
+      inline: rng.chance(0.4),
+      gin: rng.pick(['using-gin', 'path-ops', 'inverted'] as const),
+    });
+  }
+
   return indexes;
 }
 
@@ -401,7 +423,7 @@ export function columnSql(column: ColumnDef, canonicalType = false): string {
   if (column.notNull && !column.identity) sql += ' NOT NULL';
 
   const def = column.default;
-  if (def?.kind === 'const') sql += ` DEFAULT(${literal(column.type, def.value)})`;
+  if (def?.kind === 'const') sql += ` DEFAULT(${defaultLiteral(column.type, def.value)})`;
   else if (def?.kind === 'fn') sql += ` DEFAULT(${def.fn}())`;
   else if (def?.kind === 'nextval') sql += ` DEFAULT(nextval(${stringLiteral(def.sequence)}))`;
 
@@ -425,6 +447,11 @@ export function createTableSql(table: TableDef, simple = false): string {
 
   if (!simple) {
     for (const index of table.indexes.filter((i) => i.inline)) {
+      if (index.gin) {
+        parts.push(`INVERTED INDEX ${q(index.name)} (${indexKeySql(index)})`);
+        continue;
+      }
+
       let sql = `${index.unique ? 'UNIQUE KEY' : 'KEY'} ${q(index.name)} (${indexKeySql(index)})`;
       if (index.include.length > 0) sql += ` INCLUDE (${index.include.map(q).join(', ')})`;
       parts.push(sql);
@@ -447,6 +474,16 @@ export function createTableSql(table: TableDef, simple = false): string {
 }
 
 export function createIndexSql(table: TableDef, index: IndexDef): string {
+  const column = indexKeySql(index);
+  switch (index.gin) {
+    case 'using-gin':
+      return `CREATE INDEX ${q(index.name)} ON ${q(table.name)} USING GIN (${column})`;
+    case 'path-ops':
+      return `CREATE INDEX ${q(index.name)} ON ${q(table.name)} USING gin (${column} jsonb_path_ops)`;
+    case 'inverted':
+      return `CREATE INVERTED INDEX ${q(index.name)} ON ${q(table.name)} (${column})`;
+  }
+
   let sql = `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${q(index.name)} ON ${q(table.name)} (${indexKeySql(index)})`;
   if (index.include.length > 0) sql += ` INCLUDE (${index.include.map(q).join(', ')})`;
   return sql;

@@ -156,6 +156,8 @@ class Run {
       database: def.name,
       protocol: def.protocol,
       int64: 'bigint',
+      // The server's text form, exact on both transports; a parsed document loses a number's scale.
+      jsonb: 'text',
       timeoutSeconds: 120,
     });
 
@@ -186,6 +188,8 @@ class Run {
         database: def.name,
         protocol: other,
         int64: 'bigint',
+        // The server's text form, exact on both transports; a parsed document loses a number's scale.
+        jsonb: 'text',
         timeoutSeconds: 120,
       });
       try {
@@ -430,7 +434,7 @@ class Run {
           // row that fails does not take the earlier ones back out.
           for (const row of subset) {
             const values: MutableParameters = {};
-            for (const c of columns) values[c.name] = parameter(c.type, row.get(c.name) as Value, rng);
+            for (const c of columns) values[c.name] = parameter(c.type, row.get(c.name) as Value, rng, { typedRow: true });
             this.log(database, `-- client.insert(${table.def.name})`, values);
             await client.insert(table.def.name, values);
             this.typedInserts.add(row);

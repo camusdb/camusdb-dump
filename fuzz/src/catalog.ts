@@ -43,6 +43,8 @@ export function clientFor(endpoints: Endpoints, database: string, protocol: Prot
     database,
     protocol,
     int64: 'bigint',
+    // The server's text form, exact on both transports; a parsed document loses a number's scale.
+    jsonb: 'text',
     timeoutSeconds: 120,
   });
 }

@@ -15,6 +15,8 @@ by hand with a seed to replay a run.
    - random primary keys: single, composite, and `OID DEFAULT(gen_id())`
    - constant and function defaults, `serial` and identity columns, and `DEFAULT(nextval(...))`
    - unique, multi-column, descending and covering indexes, declared inline or with `CREATE INDEX`
+   - `jsonb` documents and GIN indexes, declared inline as `INVERTED INDEX` or with each
+     `CREATE INDEX` form the server accepts
    - foreign keys to other tables and to the same table, including rows that reference each other
      in a cycle
    - `CHECK` constraints, comments on tables, columns, indexes and sequences
@@ -22,6 +24,10 @@ by hand with a seed to replay a run.
    - edge values: the limits of every number type, `-0`, the smallest and largest dates, values
      below a millisecond, strings with quotes, backslashes, control characters, `NUL` and emoji,
      and values large enough to be stored out of line
+   - `jsonb` input as an application writes it: random white space, repeated keys, numbers with
+     exponents and long fractions, escapes, JSON `null`, and documents nested up to 200 levels.
+     `src/jsonb.ts` computes the text form the server returns, with no code from the driver or
+     the dump
 
    The rows go in through every write path of the driver: SQL literals, bound parameters, the typed
    row insert, transactions and `RETURNING`. REST and gRPC are both used. Rows that break a

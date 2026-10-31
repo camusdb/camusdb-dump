@@ -1,6 +1,7 @@
 import { camus, ColumnType, ticksToDate } from 'camusdb';
 import type { ParameterValue } from 'camusdb';
 
+import { canonicalJsonb, generateJsonb } from './jsonb.js';
 import type { Random } from './random.js';
 
 /**
@@ -18,7 +19,8 @@ export type ScalarKind =
   | 'date'
   | 'datetime'
   | 'uuid'
-  | 'oid';
+  | 'oid'
+  | 'jsonb';
 
 /** Element types an array column may hold. NUMERIC has no array form on the server. */
 export const ARRAY_ELEMENT_KINDS: readonly ScalarKind[] = ['int64', 'float64', 'bool', 'string', 'bytes', 'date', 'uuid'];
@@ -34,6 +36,8 @@ export type ColType =
  * - int64: bigint; float64 and float32: number (a float32 already rounded with Math.fround)
  * - numeric: decimal text; string, uuid, oid: string (uuid and oid in lowercase)
  * - bytes: Uint8Array; date: 'yyyy-MM-dd'; datetime: .NET ticks as bigint
+ * - jsonb: the JSON input text as written, white space and all; {@link canonicalJsonb} gives the text
+ *   form the server returns for it. JSON null is the text 'null', never the JavaScript null.
  * - array: a list of element values or null
  */
 export type Value = bigint | number | string | boolean | Uint8Array | null | readonly Value[];
@@ -57,6 +61,7 @@ const ALIASES: Partial<Record<ScalarKind, readonly string[]>> = {
   bytes: ['BYTES', 'blob'],
   datetime: ['DATETIME', 'timestamp'],
   oid: ['OID', 'object_id'],
+  jsonb: ['JSONB', 'jsonb', 'JSON', 'json'],
 };
 
 /** The type as written in a column definition. An alias is chosen at random to test the spellings. */
@@ -75,9 +80,9 @@ export function canonicalTypeSql(type: ColType): string {
   return type.kind.toUpperCase();
 }
 
-/** Arrays cannot be indexed; every scalar can. */
+/** Arrays cannot be indexed; every scalar can, except jsonb, which takes a GIN index only. */
 export function indexable(type: ColType): boolean {
-  return type.kind !== 'array';
+  return type.kind !== 'array' && type.kind !== 'jsonb';
 }
 
 /** The server refuses a descending key on the types that share the string key encoding. */
@@ -173,6 +178,8 @@ export function generateValue(type: ColType, rng: Random, bounds: ValueBounds = 
       return formatUuid(rng.bytes(16));
     case 'oid':
       return hex(rng.bytes(12));
+    case 'jsonb':
+      return generateJsonb(rng);
   }
 }
 
@@ -343,6 +350,38 @@ export function literal(type: ColType, value: Value): string {
     case 'uuid':
     case 'oid':
       return `'${value as string}'`;
+    case 'jsonb':
+      return jsonbLiteral(value as string);
+  }
+}
+
+/**
+ * A value as the literal of a column DEFAULT. The DEFAULT grammar takes literals only, not a cast in
+ * either spelling, so a document uses a typed literal there.
+ */
+export function defaultLiteral(type: ColType, value: Value): string {
+  if (type.kind === 'jsonb' && value !== null) {
+    const text = value as string;
+    return `${text.length % 2 === 0 ? 'JSONB' : 'JSON'} ${stringLiteral(text)}`;
+  }
+  return literal(type, value);
+}
+
+/**
+ * A document as one of the typed forms the server parses. The form follows from the text, so a value
+ * always gets the same literal, and the forms still vary across values.
+ */
+function jsonbLiteral(text: string): string {
+  const quoted = stringLiteral(text);
+  switch (text.length % 4) {
+    case 0:
+      return `JSONB ${quoted}`;
+    case 1:
+      return `JSON ${quoted}`;
+    case 2:
+      return `CAST(${quoted} AS jsonb)`;
+    default:
+      return `${quoted}::jsonb`;
   }
 }
 
@@ -374,8 +413,12 @@ export function stringLiteral(value: string): string {
 /**
  * Turns a value into what the camusdb driver binds. The choice between an inferred JavaScript value
  * and an explicit `camus.*` helper is random, so both encoder paths run.
+ *
+ * `typedRow` marks a value for the typed row insert, `client.insert()`. That path converts no value:
+ * the server refuses any value whose type is not the column's type, so a document there must be a
+ * typed jsonb value and never a plain string.
  */
-export function parameter(type: ColType, value: Value, rng: Random): ParameterValue {
+export function parameter(type: ColType, value: Value, rng: Random, options: { typedRow?: boolean } = {}): ParameterValue {
   if (value === null) return rng.chance(0.5) ? null : camus.null();
 
   if (type.kind === 'array') {
@@ -410,6 +453,14 @@ export function parameter(type: ColType, value: Value, rng: Random): ParameterVa
       return camus.uuid(value as string);
     case 'oid':
       return camus.id(value as string);
+    case 'jsonb': {
+      // A jsonb column also parses a STRING when it is written, so the plain string is a write path too.
+      const text = value as string;
+      const roll = rng.float();
+      if (roll < 0.4) return camus.jsonb(text);
+      if (roll < 0.7 && !options.typedRow) return text;
+      return camus.raw({ type: ColumnType.Jsonb, strValue: text });
+    }
   }
 }
 
@@ -446,6 +497,8 @@ export function columnType(kind: ScalarKind): ColumnType {
       return ColumnType.Uuid;
     case 'oid':
       return ColumnType.Id;
+    case 'jsonb':
+      return ColumnType.Jsonb;
   }
 }
 
@@ -541,6 +594,7 @@ function kindFromName(name: string): ScalarKind | undefined {
     DATETIME: 'datetime',
     UUID: 'uuid',
     OID: 'oid',
+    JSONB: 'jsonb',
   };
   return map[name];
 }
@@ -580,6 +634,9 @@ export function checkAgainstText(kind: ScalarKind, decoded: unknown, text: unkno
     case 'datetime':
       // The driver truncates to whole milliseconds, which is documented; the text keeps all seven digits.
       return decoded instanceof Date && isoYear(decoded).slice(0, 23) === text.slice(0, 23) ? undefined : fail();
+    case 'jsonb':
+      // The fuzzer reads jsonb in the driver's text mode, which is the server's text form exactly.
+      return decoded === text ? undefined : fail();
   }
 }
 
@@ -622,6 +679,10 @@ export function matchesWritten(type: ColType, written: Value, decoded: unknown, 
       return text === undefined
         ? decoded instanceof Date && isoYear(decoded).slice(0, 23) === ticksToIso7(written as bigint).slice(0, 23)
         : text === ticksToIso7(written as bigint);
+    case 'jsonb': {
+      const expected = canonicalJsonb(written as string);
+      return decoded === expected && (text === undefined || text === expected);
+    }
   }
 }
 
