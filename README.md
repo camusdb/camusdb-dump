@@ -115,7 +115,7 @@ By default, the dump reads every table as of one second before it starts, and re
 | `--if-not-exists` | Use `CREATE TABLE IF NOT EXISTS`, to replay onto an existing schema. |
 | `--create-database` | Add `CREATE DATABASE IF NOT EXISTS` and `USE`. Implied by `-A`. |
 | `--defer-indexes` | Create each table's indexes after its rows instead of before. |
-| `--strict` | Fail on a value that has no SQL literal (`NaN`, `±Infinity`) instead of dumping it as `NULL` with a warning. |
+| `--strict` | Fail on a value that has no SQL literal (a column type this version does not know) instead of dumping it as `NULL` with a warning. A non-finite float (`NaN`, `±Infinity`) is not such a value: it is written as `CAST('NaN' AS float64)`. |
 | `--no-header` | Leave out the comment header and the `-- Dump completed` footer. |
 | `--no-progress` | Hide the progress bars shown when writing to a file. |
 

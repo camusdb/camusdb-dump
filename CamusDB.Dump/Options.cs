@@ -111,7 +111,7 @@ public sealed class Options
     [Option("single-transaction", Required = false, HelpText = "Dump every table from one lock-free serializable snapshot, so the dump is consistent across tables.")]
     public bool SingleTransaction { get; set; }
 
-    [Option("strict", Required = false, HelpText = "Fail instead of emitting NULL when a value has no CamusDB SQL literal (a non-finite float: NaN, Infinity).")]
+    [Option("strict", Required = false, HelpText = "Fail instead of emitting NULL when a value has no CamusDB SQL literal.")]
     public bool Strict { get; set; }
 
     [Option("no-header", Required = false, HelpText = "Omit the leading comment header.")]

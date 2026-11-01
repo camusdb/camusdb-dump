@@ -19,9 +19,9 @@ namespace CamusDB.Dump;
 /// <c>date</c>, <c>datetime</c> and <c>uuid</c> ride in as string literals the server coerces on
 /// INSERT; <c>numeric</c> uses the typed literal <c>NUMERIC '…'</c>, so that no digit goes through a
 /// double; <c>jsonb</c> uses the typed literal <c>JSONB '…'</c>; <c>bytes</c> uses <c>X'…'</c> and
-/// arrays use <c>ARRAY[…]</c>. The only values with no
-/// literal at all are the non-finite floats (NaN, ±Infinity), which are reported through
-/// <see cref="DumpWarnings"/> rather than silently mangled.</para>
+/// arrays use <c>ARRAY[…]</c>. The non-finite floats (NaN, ±Infinity) have no float literal, so they
+/// are written as <c>CAST('Infinity' AS float64)</c>, the form a server with the PostgreSQL float rule
+/// reads back as the same value (see <see cref="RenderDouble"/>).</para>
 ///
 /// <para>The string rules mirror the server's <c>SqlStringLiteral</c> and must be kept in step with it
 /// by hand: this tool depends on <c>CamusDB.Client</c>, not <c>CamusDB.Core</c>, so it cannot reference
@@ -48,10 +48,10 @@ internal static class SqlLiteral
                 return value.LongValue.ToString(CultureInfo.InvariantCulture);
 
             case ColumnType.Float64:
-                return RenderDouble(value.FloatValue, table, column, warnings);
+                return RenderDouble(value.FloatValue, "float64", warnings);
 
             case ColumnType.Float32:
-                return RenderDouble((float)value.FloatValue, table, column, warnings);
+                return RenderDouble((float)value.FloatValue, "float32", warnings);
 
             // The typed literal keeps every digit; a bare 1.5 would parse as FLOAT64 and round.
             case ColumnType.Numeric:
@@ -213,12 +213,29 @@ internal static class SqlLiteral
         return sb.Append(']').ToString();
     }
 
-    private static string RenderDouble(double value, string table, string column, DumpWarnings warnings)
+    /// <summary>
+    /// Renders a float. A finite value is a float literal with every digit. A non-finite value (NaN,
+    /// +Infinity, -Infinity) has no float literal, so it is the cast of its text form,
+    /// <c>CAST('NaN' AS float64)</c>, which keeps the value and its type in every position: a VALUES
+    /// list, an <c>ARRAY[…]</c> element and a typed column alike.
+    ///
+    /// <para>The server reads that text only since it follows the PostgreSQL float rule, where
+    /// <c>'Infinity'</c>, <c>'-Infinity'</c> and <c>'NaN'</c> are values. An older server refuses the
+    /// cast with an error when the dump loads, so no value is lost without notice. The dump says so once
+    /// in a note. Before, these values were written as <c>NULL</c> with a warning, which lost them.</para>
+    /// </summary>
+    private static string RenderDouble(double value, string typeName, DumpWarnings warnings)
     {
-        if (double.IsNaN(value) || double.IsInfinity(value))
+        if (!double.IsFinite(value))
         {
-            warnings.Unrepresentable(table, column, $"'{value}' has no SQL literal form");
-            return "NULL";
+            warnings.Note(
+                "non-finite-floats",
+                "the dump holds NaN or Infinity float values, written as CAST('NaN' AS float64). " +
+                "Load it on a server that accepts that cast (a server with the PostgreSQL float rule); " +
+                "an older server refuses the statement.");
+
+            string name = double.IsNaN(value) ? "NaN" : value > 0 ? "Infinity" : "-Infinity";
+            return "CAST('" + name + "' AS " + typeName + ")";
         }
 
         string round = value.ToString("R", CultureInfo.InvariantCulture);
