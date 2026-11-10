@@ -192,7 +192,17 @@ Notes:
 - The list comes from `SHOW EXTENSIONS`, which needs a superuser. For any other user the dump carries no extensions and warns once.
 - `--no-create-table` leaves out the `CREATE EXTENSION` statements, and `--add-drop-table` drops the extensions with `DROP EXTENSION IF EXISTS` after the tables and sequences, each one before the extensions it requires. A view or a trigger on the target that uses an extension makes that drop fail. A target server older than the `IF EXISTS` form refuses the drop as a syntax error.
 - A server older than C# extensions answers `SHOW EXTENSIONS` with an error. The dump then carries no extensions and does not warn, because that server cannot have any.
-- Triggers are not in the dump. Recreate them after the rows are loaded.
+- The triggers are in the dump; see [Triggers](#triggers).
+
+## Triggers
+
+The dump creates the row triggers of the dumped tables again with the statement of `SHOW CREATE TRIGGER`, after the last table and its rows. A trigger that existed while the rows load would fire for each one, and its SQL can write a table that comes later in the dump. The triggers of one table keep their creation order, which is the order they fire in.
+
+- A trigger of an extension is written as `EXTERNAL NAME '...'`. The target needs the same extension, which the dump installs before the first table.
+- An inline trigger is written as `LANGUAGE csharp AS $$ ... $$`, with its whole C# body. The target server needs `inline_triggers_enabled`. The body holds semicolons, so load the dump with a client that reads the text between two equal dollar quotes as one statement.
+- The SQL of an inline trigger runs with its owner's rights, and the user who loads the dump owns the triggers it creates. No statement gives a trigger to another user. When a trigger had another owner, the dump warns once and names the triggers.
+- The list comes from `SHOW TRIGGERS`, which needs `SELECT` or `ALTER` on the database. For any other user the dump carries no triggers and warns once. A server older than `SHOW TRIGGERS` answers with an error, and the dump then carries no triggers and does not warn.
+- `--no-create-table` leaves out the triggers. `--add-drop-table` writes no `DROP TRIGGER`, because a trigger goes with its table. The triggers of a table that `--table` or `--exclude-table` leaves out are not in the dump.
 
 ## Foreign keys
 

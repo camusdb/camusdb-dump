@@ -4,14 +4,14 @@
     "net10.0": {
       "CamusDB.Client": {
         "type": "Direct",
-        "requested": "[0.17.1, )",
-        "resolved": "0.17.1",
-        "contentHash": "uSvCh8+nYHyawjY1BvjHJRB4vHxBd08yaqzi8WKzOm3tkwjYurTOB360OwC4pLj33vFg07R53CxZAb77xC8Edg==",
+        "requested": "[0.18.0, )",
+        "resolved": "0.18.0",
+        "contentHash": "72xDWwDs1HzNGhfgcVfUECjnJglzJbUD1oiYVmasj4c8H9MIbk9JVWZziBv+Xg5ec/u1NTRKgkyJl59Hd5cbaA==",
         "dependencies": {
           "Flurl": "4.0.0",
           "Flurl.Http": "4.0.2",
-          "Google.Protobuf": "3.29.6",
-          "Grpc.Net.Client": "2.67.0",
+          "Google.Protobuf": "3.36.2",
+          "Grpc.Net.Client": "2.85.0",
           "Polly": "8.8.0"
         }
       },
@@ -45,35 +45,43 @@
       },
       "Google.Protobuf": {
         "type": "Transitive",
-        "resolved": "3.29.6",
-        "contentHash": "K7bVLOuKW1lfBmiKYtI78T2l/oOHOGuevNtET0MrQXgS5u7yAHqRQGNvcyVkiva5SWVZlM1zj8fOGEPIhk+nSQ=="
+        "resolved": "3.36.2",
+        "contentHash": "Ci1q1iJg74qAE5riTA2FbMS0wPbpruPQI/JQ9DrAsRo2VsSxgt1e/pmxGxgrci+pXJEgrSYg2vPl8rrStZkclQ=="
       },
       "Grpc.Core.Api": {
         "type": "Transitive",
-        "resolved": "2.67.0",
-        "contentHash": "cL1/2f8kc8lsAGNdfCU25deedXVehhLA6GXKLLN4hAWx16XN7BmjYn3gFU+FBpir5yJynvDTHEypr3Tl0j7x/Q=="
+        "resolved": "2.85.0",
+        "contentHash": "cpYu/nw/QhwHcRZMJbYD8lEllKrdwYMiDS4U3oH61nhYPUMNkcCcef4ulv11svHvTBThYV+ju332N9bCrfe7cQ=="
       },
       "Grpc.Net.Client": {
         "type": "Transitive",
-        "resolved": "2.67.0",
-        "contentHash": "ofTjJQfegWkVlk5R4k/LlwpcucpsBzntygd4iAeuKd/eLMkmBWoXN+xcjYJ5IibAahRpIJU461jABZvT6E9dwA==",
+        "resolved": "2.85.0",
+        "contentHash": "BPMA5mb96ihVQfXTuIUpC1aie2I0ODBD6QCc0UXYS5zQMK6sJW5yck8NZ2ffvGHfOanWyn2Yg0tJbYY3nV+zIw==",
         "dependencies": {
-          "Grpc.Net.Common": "2.67.0",
-          "Microsoft.Extensions.Logging.Abstractions": "6.0.0"
+          "Grpc.Net.Common": "2.85.0",
+          "Microsoft.Extensions.Logging.Abstractions": "8.0.1"
         }
       },
       "Grpc.Net.Common": {
         "type": "Transitive",
-        "resolved": "2.67.0",
-        "contentHash": "gazn1cD2Eol0/W5ZJRV4PYbNrxJ9oMs8pGYux5S9E4MymClvl7aqYSmpqgmWAUWvziRqK9K+yt3cjCMfQ3x/5A==",
+        "resolved": "2.85.0",
+        "contentHash": "e+RczhQVHb5MacI1oMTLMK6InZLH22POZcE4gsy5SnolsElLaqhSwEhqm+cF0m4Q1JGmlhjf1nbnKh7sBbjJVg==",
         "dependencies": {
-          "Grpc.Core.Api": "2.67.0"
+          "Grpc.Core.Api": "2.85.0"
         }
+      },
+      "Microsoft.Extensions.DependencyInjection.Abstractions": {
+        "type": "Transitive",
+        "resolved": "8.0.1",
+        "contentHash": "fGLiCRLMYd00JYpClraLjJTNKLmMJPnqxMaiRzEBIIvevlzxz33mXy39Lkd48hu1G+N21S7QpaO5ZzKsI6FRuA=="
       },
       "Microsoft.Extensions.Logging.Abstractions": {
         "type": "Transitive",
-        "resolved": "6.0.0",
-        "contentHash": "/HggWBbTwy8TgebGSX5DBZ24ndhzi93sHUBDvP1IxbZD7FDokYzdAr6+vbWGjw2XAfR2EJ1sfKUotpjHnFWPxA=="
+        "resolved": "8.0.1",
+        "contentHash": "RIFgaqoaINxkM2KTOw72dmilDmTrYA0ns2KW4lDz4gZ2+o6IQ894CzmdL3StM2oh7QQq44nCWiqKqc4qUI9Jmg==",
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.1"
+        }
       },
       "Polly": {
         "type": "Transitive",

@@ -94,9 +94,11 @@ internal sealed partial class Dumper
         List<SequenceInfo> sequences = await ReadSequencesAsync(tables, definitions, cancellationToken).ConfigureAwait(false);
         List<SequenceInfo> freeStanding = sequences.Where(s => s.OwnedBy is null).ToList();
         List<ExtensionInfo> extensions = await ReadExtensionsAsync(cancellationToken).ConfigureAwait(false);
+        List<FunctionInfo> functions = await ReadFunctionsAsync(cancellationToken).ConfigureAwait(false);
+        List<TriggerInfo> triggers = await ReadTriggersAsync(tables, cancellationToken).ConfigureAwait(false);
 
         if (!opts.NoHeader)
-            WriteHeader(endpoint, protocol, tables, sequences, extensions);
+            WriteHeader(endpoint, protocol, tables, sequences, extensions, functions, triggers);
 
         // With --all-databases the pair is not optional: each section has to create its database and then
         // point the client at it, or everything that follows would land in whichever database the client
@@ -118,9 +120,15 @@ internal sealed partial class Dumper
             foreach (SequenceInfo sequence in freeStanding)
                 output.WriteLine(SequenceCatalog.DropStatement(sequence));
 
+            // After the tables, whose CHECK constraints may call them, and before the extensions: the
+            // server refuses to drop a function that a table or a view still calls.
+            foreach (FunctionInfo function in functions)
+                output.WriteLine(FunctionCatalog.DropStatement(function));
+
             // Last, and each one before the extensions it requires: the server refuses to drop an extension
-            // that a table, another extension, a view or a trigger still uses. Views and triggers are not in
-            // the dump, so one on the target that uses an extension stops the load here, by name. IF EXISTS
+            // that a table, another extension, a view or a trigger still uses. A dumped trigger goes with its
+            // table; views, and the triggers of tables outside the dump, are not dropped, so one on the target
+            // that uses an extension stops the load here, by name. IF EXISTS
             // keeps a target that never installed the extension loadable.
             for (int i = extensions.Count - 1; i >= 0; i--)
                 output.WriteLine(ExtensionCatalog.DropStatement(extensions[i]));
@@ -132,6 +140,11 @@ internal sealed partial class Dumper
         // an extension, and the server resolves the name when the table is created.
         if (!opts.NoCreateTable)
             WriteStatements(extensions.Select(ExtensionCatalog.CreateStatement));
+
+        // After the extensions, whose names a function may not take, and before the tables, for the
+        // same reason as the extensions: a CHECK constraint or a column default can call a function.
+        if (!opts.NoCreateTable)
+            WriteStatements(functions.SelectMany(function => FunctionCatalog.CreateStatements(function, opts.User)));
 
         WriteFreeStandingSequences(freeStanding);
 
@@ -176,6 +189,10 @@ internal sealed partial class Dumper
 
             progress.TableCompleted();
         }
+
+        // After every table and its rows: a trigger that existed during the load would fire for each
+        // loaded row, and its SQL can write a table that comes later in the dump.
+        WriteStatements(triggers.Select(TriggerCatalog.CreateStatement));
 
         if (!opts.NoHeader)
             WriteFooter();
@@ -244,6 +261,62 @@ internal sealed partial class Dumper
     }
 
     /// <summary>
+    /// The inline SQL functions the dump creates (see <see cref="FunctionCatalog"/>). Read only when the
+    /// dump writes table definitions, like the extensions. A user who may not read <c>SHOW FUNCTIONS</c>
+    /// gets a dump without functions, and the dump says so once.
+    /// </summary>
+    private async Task<List<FunctionInfo>> ReadFunctionsAsync(CancellationToken cancellationToken)
+    {
+        if (opts.NoCreateTable)
+            return [];
+
+        List<FunctionInfo>? functions = await FunctionCatalog.ReadAsync(CreateCommand, cancellationToken).ConfigureAwait(false);
+
+        if (functions is null)
+        {
+            warnings.Note(
+                "functions-unreadable",
+                "SHOW FUNCTIONS was refused (it requires SELECT or CREATE on the database), so the dump creates no inline functions; " +
+                "run CREATE FUNCTION for each one on the target before loading the dump.");
+            return [];
+        }
+
+        return functions;
+    }
+
+    /// <summary>
+    /// The row triggers of the dumped tables (see <see cref="TriggerCatalog"/>). Read only when the dump
+    /// writes table definitions. A user who may not read <c>SHOW TRIGGERS</c> gets a dump without
+    /// triggers, and the dump says so once, as it does when an inline trigger changes owner on the target.
+    /// </summary>
+    private async Task<List<TriggerInfo>> ReadTriggersAsync(List<string> tables, CancellationToken cancellationToken)
+    {
+        if (opts.NoCreateTable || tables.Count == 0)
+            return [];
+
+        List<TriggerInfo>? triggers = await TriggerCatalog.ReadAsync(CreateCommand, tables, cancellationToken).ConfigureAwait(false);
+
+        if (triggers is null)
+        {
+            warnings.Note(
+                "triggers-unreadable",
+                "SHOW TRIGGERS was refused (it requires SELECT or ALTER on the database), so the dump creates no triggers; " +
+                "run CREATE TRIGGER for each one on the target after loading the dump.");
+            return [];
+        }
+
+        List<string> reowned = triggers.Where(t => TriggerCatalog.ChangesOwner(t, opts.User)).Select(t => t.Table + "." + t.Name).ToList();
+
+        if (reowned.Count > 0)
+            warnings.Note(
+                "triggers-change-owner",
+                $"The inline triggers {string.Join(", ", reowned)} had another owner; the user who loads the dump owns them on the target, " +
+                "and their SQL runs with that user's rights.");
+
+        return triggers;
+    }
+
+    /// <summary>
     /// Creates the free-standing sequences, before the first table: a column default can draw from one,
     /// and CREATE TABLE refuses a default that names a sequence that does not exist yet.
     /// </summary>
@@ -282,7 +355,9 @@ internal sealed partial class Dumper
             output.WriteLine();
     }
 
-    private void WriteHeader(string endpoint, string protocol, List<string> tables, List<SequenceInfo> sequences, List<ExtensionInfo> extensions)
+    private void WriteHeader(
+        string endpoint, string protocol, List<string> tables, List<SequenceInfo> sequences, List<ExtensionInfo> extensions, List<FunctionInfo> functions,
+        List<TriggerInfo> triggers)
     {
         string version = typeof(Dumper).Assembly.GetName().Version?.ToString(3) ?? "";
 
@@ -295,6 +370,12 @@ internal sealed partial class Dumper
 
         if (extensions.Count > 0)
             output.WriteLine($"-- Extensions: {string.Join(", ", extensions.Select(e => e.Name + " " + e.Version))} (the target server must load these builds)");
+
+        if (functions.Count > 0)
+            output.WriteLine($"-- Functions: {string.Join(", ", functions.Select(f => f.Name))} (the target server needs inline_functions_enabled; a body is between dollar quotes and holds semicolons)");
+
+        if (triggers.Count > 0)
+            output.WriteLine($"-- Triggers: {string.Join(", ", triggers.Select(t => t.Table + "." + t.Name))} (created after the rows; an inline trigger needs inline_triggers_enabled on the target)");
 
         if (opts.AllDatabases)
             output.WriteLine($"-- One section of an --all-databases dump. The USE below switches to {database}; a client that does not read USE has to connect to it directly.");
