@@ -115,6 +115,10 @@ internal sealed class DumpSession
         catch (CamusException exception)
         {
             await Console.Error.WriteLineAsync($"camus-dump: error {exception.Code}: {exception.Message}").ConfigureAwait(false);
+
+            if (Hint(exception) is { } hint)
+                await Console.Error.WriteLineAsync("camus-dump: " + hint).ConfigureAwait(false);
+
             return 1;
         }
         catch (OperationCanceledException)
@@ -462,4 +466,19 @@ internal sealed class DumpSession
         foreach ((string database, DumpWarnings warnings) in collected)
             warnings.Report(Console.Error, several ? database : null);
     }
+
+    /// <summary>
+    /// What the user can do about a server error, when the error code alone does not say it.
+    ///
+    /// <para><c>CADB0847</c> (<c>SnapshotTooOld</c>): the dump reads every table at one instant, and the
+    /// server no longer keeps the history of that instant. This occurs when <c>--as-of</c> is older than
+    /// the retention age, or when the dump runs for longer than the retention age. A server older than
+    /// this error code gave such a read as an empty table, or as a retry that failed again.</para>
+    /// </summary>
+    private static string? Hint(CamusException exception) => exception.Code switch
+    {
+        "CADB0847" => "the server no longer keeps the history of the instant the dump reads at. Use a newer --as-of. " +
+                      "If the dump runs for longer than the retention age, increase kahuna.persistent_revision_retention_age_seconds on the server.",
+        _ => null,
+    };
 }

@@ -115,7 +115,7 @@ Offsets take `ms`, `s`, `m`, `h`, `d` and must be negative. A relative offset is
 Notes:
 
 - **Rows only.** `SHOW CREATE TABLE` and `SHOW INDEXES` have no time-travel form, so the schema in the dump is the current one. A table created after the chosen instant appears with its definition and no rows.
-- **Retention bounds how far back you can look.** An instant older than the history the storage layer still keeps reads as empty rather than as an error.
+- **Retention bounds how far back you can look.** When the server no longer keeps the history of the instant, the dump fails with `CADB0847` (`SnapshotTooOld`) and prints a hint. This occurs when `--as-of` is older than the retention age, or when the dump runs for longer than the retention age. Use a newer instant, or increase `kahuna.persistent_revision_retention_age_seconds` on the server. A server older than this error code reads such an instant as empty tables.
 - **`--single-transaction` replaces it.** The server rejects `AS OF SYSTEM TIME` inside an explicit transaction, which is already pinned to one snapshot; passing `--single-transaction` turns the default off, and passing both it and `--as-of` is an error.
 - **`--no-as-of`** reads the latest committed data, with no consistency guarantee across tables.
 
@@ -194,13 +194,34 @@ Notes:
 - A server older than C# extensions answers `SHOW EXTENSIONS` with an error. The dump then carries no extensions and does not warn, because that server cannot have any.
 - The triggers are in the dump; see [Triggers](#triggers).
 
+## Inline functions
+
+The dump creates the inline functions of the database again with the statement of `SHOW CREATE FUNCTION`, after the extensions and before the sequences and the first table. A column default or a CHECK constraint can call a function, and the server resolves the name when the table is created.
+
+- A function is written as `LANGUAGE csharp AS $$ ... $$`, with its whole C# body. The body holds semicolons, so load the dump with a client that reads the text between two equal dollar quotes as one statement.
+- The user who loads the dump owns the functions it creates. When a function had another owner, the dump writes `ALTER FUNCTION ... OWNER TO` after it. That statement needs the owner to exist on the target, and the loading user to be a superuser.
+- The list comes from `SHOW FUNCTIONS`, which needs `SELECT` or `CREATE` on the database. For any other user the dump carries no functions and warns once.
+- `--no-create-table` leaves out the functions. `--add-drop-table` drops them with `DROP FUNCTION IF EXISTS` after the tables. The server refuses to drop a function that a view, or a trigger of a table outside the dump, still calls.
+
+## Server settings for inline code
+
+The default server configuration does not accept inline C# code. Before you load a dump that has inline functions or inline triggers, set these keys in the configuration of the target server:
+
+```yaml
+inline_functions_enabled: true   # CREATE FUNCTION ... LANGUAGE csharp
+inline_triggers_enabled: true    # CREATE TRIGGER ... LANGUAGE csharp
+```
+
+Without them, the load stops at the first such statement. The dump warns once and names the settings that it needs.
+
 ## Triggers
 
 The dump creates the row triggers of the dumped tables again with the statement of `SHOW CREATE TRIGGER`, after the last table and its rows. A trigger that existed while the rows load would fire for each one, and its SQL can write a table that comes later in the dump. The triggers of one table keep their creation order, which is the order they fire in.
 
 - A trigger of an extension is written as `EXTERNAL NAME '...'`. The target needs the same extension, which the dump installs before the first table.
-- An inline trigger is written as `LANGUAGE csharp AS $$ ... $$`, with its whole C# body. The target server needs `inline_triggers_enabled`. The body holds semicolons, so load the dump with a client that reads the text between two equal dollar quotes as one statement.
+- An inline trigger is written as `LANGUAGE csharp AS $$ ... $$`, with its whole C# body. The target server needs `inline_triggers_enabled` (see [Server settings for inline code](#server-settings-for-inline-code)). The body holds semicolons, so load the dump with a client that reads the text between two equal dollar quotes as one statement.
 - The SQL of an inline trigger runs with its owner's rights, and the user who loads the dump owns the triggers it creates. No statement gives a trigger to another user. When a trigger had another owner, the dump warns once and names the triggers.
+- A trigger created while authentication was off has no owner. With authentication on, the server refuses the SQL of such a trigger (`CADB0846`). On the target, the user who loads the dump owns the trigger, and its SQL runs with that user's rights. The dump warns once and names these triggers. Examine each body before you load the dump.
 - The list comes from `SHOW TRIGGERS`, which needs `SELECT` or `ALTER` on the database. For any other user the dump carries no triggers and warns once. A server older than `SHOW TRIGGERS` answers with an error, and the dump then carries no triggers and does not warn.
 - `--no-create-table` leaves out the triggers. `--add-drop-table` writes no `DROP TRIGGER`, because a trigger goes with its table. The triggers of a table that `--table` or `--exclude-table` leaves out are not in the dump.
 

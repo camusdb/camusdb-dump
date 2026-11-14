@@ -31,7 +31,8 @@ internal sealed record TriggerInfo(string Name, string Table, string Form, strin
 /// <para><b>Owners.</b> The SQL of an inline trigger runs with its owner's rights, and the owner is the
 /// user who creates it. The user who loads the dump therefore owns every inline trigger it creates;
 /// there is no statement that gives a trigger to another user. The dump says so when a trigger had
-/// another owner.</para>
+/// another owner, and when a trigger had no owner: a server with authentication on refuses the SQL of
+/// such a trigger, but on the target the trigger gets an owner whose rights its SQL uses.</para>
 ///
 /// <para>The list comes from <c>SHOW TRIGGERS</c>, which needs <c>SELECT</c> or <c>ALTER</c> on the
 /// database. The target server must accept the inline form (<c>inline_triggers_enabled</c>).</para>
@@ -102,9 +103,21 @@ internal static class TriggerCatalog
 
     /// <summary>True for an inline trigger whose owner is not <paramref name="dumpUser"/>: on the target its SQL runs with other rights.</summary>
     public static bool ChangesOwner(TriggerInfo trigger, string? dumpUser) =>
-        string.Equals(trigger.Form, "csharp", StringComparison.OrdinalIgnoreCase)
+        IsInline(trigger)
         && !string.IsNullOrEmpty(trigger.Owner)
         && !string.Equals(trigger.Owner, dumpUser, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True for an inline trigger that has no owner, because it was created while authentication was
+    /// off. On a server with authentication on, the SQL of such a trigger is refused (<c>CADB0846</c>).
+    /// The user who loads the dump owns the trigger on the target, so there its SQL runs with that
+    /// user's rights.
+    /// </summary>
+    public static bool HasNoOwner(TriggerInfo trigger) =>
+        IsInline(trigger) && string.IsNullOrEmpty(trigger.Owner);
+
+    private static bool IsInline(TriggerInfo trigger) =>
+        string.Equals(trigger.Form, "csharp", StringComparison.OrdinalIgnoreCase);
 
     private static string? Text(CamusDataReader reader, string field)
     {

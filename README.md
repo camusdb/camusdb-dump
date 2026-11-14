@@ -140,6 +140,7 @@ Feed the dump to a CamusDB SQL client such as [`camus-cli`](https://github.com/c
 ## Limitations
 
 - Sequence positions and table definitions are read when the dump starts, not at `--as-of`.
+- A dump with inline C# functions or triggers loads only on a server with `inline_functions_enabled` and `inline_triggers_enabled` set. The default server configuration leaves them off.
 - A `--where` condition or a `--table` filter can leave out rows or tables that the dumped rows reference. The restore then needs them to already exist. `camus-dump` warns when a filtered-out table is referenced.
 - Each restored sequence position takes about five seconds on the server.
 

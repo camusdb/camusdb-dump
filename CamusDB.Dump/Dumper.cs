@@ -97,6 +97,8 @@ internal sealed partial class Dumper
         List<FunctionInfo> functions = await ReadFunctionsAsync(cancellationToken).ConfigureAwait(false);
         List<TriggerInfo> triggers = await ReadTriggersAsync(tables, cancellationToken).ConfigureAwait(false);
 
+        NoteInlineSettings(functions, triggers);
+
         if (!opts.NoHeader)
             WriteHeader(endpoint, protocol, tables, sequences, extensions, functions, triggers);
 
@@ -285,9 +287,35 @@ internal sealed partial class Dumper
     }
 
     /// <summary>
+    /// Tells the user which server settings the load needs. A CamusDB server refuses
+    /// <c>CREATE FUNCTION ... LANGUAGE csharp</c> and <c>CREATE TRIGGER ... LANGUAGE csharp</c> unless
+    /// <c>inline_functions_enabled</c> and <c>inline_triggers_enabled</c> are set, and the default
+    /// configuration sets neither. Without them the load stops at the first such statement.
+    /// </summary>
+    private void NoteInlineSettings(List<FunctionInfo> functions, List<TriggerInfo> triggers)
+    {
+        List<string> settings = [];
+
+        if (functions.Count > 0)
+            settings.Add("inline_functions_enabled");
+
+        if (triggers.Any(t => string.Equals(t.Form, "csharp", StringComparison.OrdinalIgnoreCase)))
+            settings.Add("inline_triggers_enabled");
+
+        if (settings.Count == 0)
+            return;
+
+        warnings.Note(
+            "inline-settings",
+            $"The dump creates inline C# code. Set {string.Join(" and ", settings.Select(s => s + ": true"))} in the configuration of the target server " +
+            "before you load the dump; the default configuration leaves them off, and the server then refuses the statements.");
+    }
+
+    /// <summary>
     /// The row triggers of the dumped tables (see <see cref="TriggerCatalog"/>). Read only when the dump
     /// writes table definitions. A user who may not read <c>SHOW TRIGGERS</c> gets a dump without
-    /// triggers, and the dump says so once, as it does when an inline trigger changes owner on the target.
+    /// triggers, and the dump says so once, as it does when an inline trigger changes owner on the target
+    /// or has no owner on the source.
     /// </summary>
     private async Task<List<TriggerInfo>> ReadTriggersAsync(List<string> tables, CancellationToken cancellationToken)
     {
@@ -312,6 +340,15 @@ internal sealed partial class Dumper
                 "triggers-change-owner",
                 $"The inline triggers {string.Join(", ", reowned)} had another owner; the user who loads the dump owns them on the target, " +
                 "and their SQL runs with that user's rights.");
+
+        List<string> ownerless = triggers.Where(TriggerCatalog.HasNoOwner).Select(t => t.Table + "." + t.Name).ToList();
+
+        if (ownerless.Count > 0)
+            warnings.Note(
+                "triggers-without-owner",
+                $"The inline triggers {string.Join(", ", ownerless)} had no owner, because they were created while authentication was off; " +
+                "with authentication on, the source server refuses their SQL (CADB0846). The user who loads the dump owns them on the target, " +
+                "and their SQL runs with that user's rights. Check each body before you load the dump, or leave out the trigger.");
 
         return triggers;
     }
