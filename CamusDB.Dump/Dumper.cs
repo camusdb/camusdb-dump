@@ -737,6 +737,15 @@ internal sealed partial class Dumper
         if (reader.IsDBNull(columnsOrdinal))
             return "";
 
+        // An expression index (CREATE INDEX i ON t ((lower(email)))) has a key part that is no
+        // identifier, and its expression may hold commas, so Columns cannot rebuild it. The server
+        // then sends Key, the key list exactly as CREATE INDEX takes it, rendered the way SHOW CREATE
+        // TABLE renders the same index; it is written as the server sends it, as the CREATE TABLE text
+        // is. A plain index keeps the re-quoted column list below, so its output does not change.
+        string key = OptionalString(reader, "Key");
+        if (key.Length > 0 && HasExpressionKeyPart(reader.GetString(columnsOrdinal)))
+            return key;
+
         string[] columns = Split(reader.GetString(columnsOrdinal));
         string[] directions = Split(OptionalString(reader, "Directions"));
 
@@ -759,6 +768,12 @@ internal sealed partial class Dumper
 
     private static string[] Split(string value)
         => value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>
+    /// Whether a <c>Columns</c> field of <c>SHOW INDEXES</c> holds an expression key part. The server
+    /// writes an expression in parentheses, which no identifier can hold.
+    /// </summary>
+    private static bool HasExpressionKeyPart(string columns) => columns.Contains('(');
 
     /// <summary>
     /// Reads a field that a server older than this tool may not send at all. <c>GetOrdinal</c> throws
